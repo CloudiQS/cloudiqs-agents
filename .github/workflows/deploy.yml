@@ -18,8 +18,40 @@ env:
   STACK_NAME: ${{ github.event.inputs.stack_name || 'cloudiqs-engine' }}
 
 jobs:
-  deploy:
+
+  # ── Job 1: Run tests before any deployment ─────────────────────────────────
+  test:
+    name: Bridge Tests
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: bridge/requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          cd bridge
+          pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: |
+          cd bridge
+          # Disable auth during tests (mocked in conftest.py anyway)
+          BRIDGE_AUTH_ENABLED=false pytest tests/ -v --tb=short
+        env:
+          DATA_DIR: /tmp/bridge-test-data
+
+  # ── Job 2: Deploy (only runs if tests pass) ────────────────────────────────
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    needs: test  # Blocked until tests pass
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -56,24 +88,23 @@ jobs:
             ]' \
             --query 'Command.CommandId' \
             --output text)
-          
+
           echo "command_id=$COMMAND_ID" >> $GITHUB_OUTPUT
           echo "SSM Command: $COMMAND_ID"
-          
-          # Poll for completion (aws ssm wait is unreliable)
+
+          # Poll for completion (aws ssm wait is unreliable for long commands)
           for i in $(seq 1 60); do
             STATUS=$(aws ssm get-command-invocation \
               --command-id "$COMMAND_ID" \
               --instance-id "${{ env.INSTANCE_ID }}" \
               --query 'StatusDetails' \
               --output text 2>/dev/null || echo "Pending")
-            
+
             if [ "$STATUS" = "Success" ]; then
               echo "Deploy succeeded"
               break
             elif [ "$STATUS" = "Failed" ] || [ "$STATUS" = "TimedOut" ]; then
               echo "Deploy failed: $STATUS"
-              # Get error output
               aws ssm get-command-invocation \
                 --command-id "$COMMAND_ID" \
                 --instance-id "${{ env.INSTANCE_ID }}" \
@@ -81,14 +112,14 @@ jobs:
                 --output text 2>/dev/null | tail -20
               exit 1
             fi
-            
+
+            echo "Status: $STATUS — waiting..."
             sleep 10
           done
 
       - name: Verify deployment
         if: success()
         run: |
-          # Run diagnostics via SSM
           DIAG_ID=$(aws ssm send-command \
             --instance-ids "${{ env.INSTANCE_ID }}" \
             --document-name "AWS-RunShellScript" \
@@ -96,9 +127,9 @@ jobs:
             --parameters commands='["bash /home/ubuntu/cloudiqs-engine/scripts/diagnostics.sh"]' \
             --query 'Command.CommandId' \
             --output text)
-          
+
           sleep 15
-          
+
           aws ssm get-command-invocation \
             --command-id "$DIAG_ID" \
             --instance-id "${{ env.INSTANCE_ID }}" \

@@ -40,7 +40,8 @@ Do NOT try to process multiple companies in one run.
 
 ### Step 3 - Verify on Companies House
 ```
-curl -u "COMPANIES_HOUSE_KEY:" "https://api.company-information.service.gov.uk/search/companies?q=COMPANY_NAME"
+CH_KEY=$(curl -s http://localhost:8787/config/companies-house-key -H "X-API-Key: $BRIDGE_API_KEY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('api_key',''))")
+curl -u "$CH_KEY:" "https://api.company-information.service.gov.uk/search/companies?q=COMPANY_NAME"
 ```
 Confirm: UK registered, active, right size. Get registered address and postcode.
 

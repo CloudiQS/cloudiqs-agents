@@ -1,6 +1,10 @@
 # SOW Reference Architectures
 
-The `ace-sow` agent includes the relevant architecture pattern in section 5 of the SOW based on campaign type. All architecture sections are marked `[TBC — Sita to review]`. These are starting points, not final designs.
+**Primary:** The `ace-sow` agent calls `POST /mcp/architecture` (bridge endpoint) to generate architectures dynamically using Bedrock Claude Sonnet. The bridge takes customer requirements + service type and returns a tailored architecture with ASCII diagram, service list, and key decisions.
+
+**Fallback:** If Bedrock is unavailable, the agent uses the static patterns below. All architecture sections are marked `*[Sita to validate before sending to customer]*`.
+
+These patterns are starting points. Sita reviews and customises for each customer before the SOW is sent.
 
 ---
 

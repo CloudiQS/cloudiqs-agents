@@ -70,11 +70,23 @@ Include all standard sections (1–5 common + service-specific + 6–11 closing)
 
 ### Step 4 - Generate SOW content
 
-Produce the SOW as structured markdown with all sections populated. Rules:
+First, generate the architecture section dynamically using Bedrock:
+
+```bash
+ARCH=$(curl -s -X POST http://localhost:8787/mcp/architecture \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $BRIDGE_API_KEY" \
+  -d "{\"requirements\": \"${pain_summary}. Signal: ${signal}\", \"service_type\": \"${campaign_vertical}\", \"company\": \"${company_name}\"}" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin).get('architecture','[TBC — Sita to complete]'))")
+```
+
+Insert `$ARCH` into section 5 (Scope of Work) of the SOW. Always add `*[Sita to validate before sending to customer]*` after it.
+
+Then produce the full SOW as structured markdown. Rules:
 
 - Replace every `{PLACEHOLDER}` with real data from HubSpot and ACE
 - Use `[TBC]` for any field where data is insufficient or uncertain
-- Mark every architecture section with `*[TBC — Sita to review and validate]*`
+- Architecture section: use Bedrock output above, marked for Sita to validate
 - Mark any pricing uncertainty with `*[TBC — confirm with Steve]*`
 - Team section: always include Steve (CEO), Oliver (Alliance Lead), Sita (Solutions Architect) on CloudiQS side
 - AWS funding section: include if MAP, WAR, or POC credits apply based on funding eligibility result

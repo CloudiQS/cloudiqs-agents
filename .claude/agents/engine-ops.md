@@ -91,7 +91,7 @@ Warn if disk > 80% used. Warn if free memory < 500MB.
 commands=["openclaw cron list 2>/dev/null | grep -cE 'idle|ok|running|error' || echo 0"]
 ```
 
-Expected: 46 jobs. Warn if below 40.
+Expected: 48 jobs (48 cron entries for 46 agents). Warn if below 44.
 
 ### Check 6 — Recent agent errors (last run)
 
@@ -140,7 +140,7 @@ After running all checks, produce a report in this format:
 | Metric | OK | Warning | Critical |
 |--------|----|---------|----------|
 | Bridge errors (24h) | 0–5 | 6–20 | 21+ |
-| Cron jobs registered | 44–46 | 38–43 | <38 |
+| Cron jobs registered | 46–48 | 40–45 | <40 |
 | Disk used | <70% | 70–85% | >85% |
 | Free memory | >1GB | 500MB–1GB | <500MB |
 | Bridge uptime | Running | — | Not running |

@@ -1,33 +1,67 @@
 """
-CloudiQS Bridge API v2.
-Routes agent output to HubSpot, Instantly, ACE, and Teams.
+CloudiQS Bridge API v7.1
+Routes agent output to HubSpot, Instantly, ACE, Teams, and Partner Central MCP.
 
 DESIGN DECISIONS:
-- POST /lead creates HubSpot contact + deal + Instantly enrol + Teams notify
-  It does NOT create an ACE opportunity (that happens on Qualified stage)
-- POST /ace/create is called by ace-create agent when deal reaches Qualified
-- POST /ingest creates a HubSpot deal only (no Instantly, no ACE) for bulk uploads
-- POST /webhook/instantly handles reply/bounce/open events from Instantly
+- POST /lead: HubSpot contact + deal + Instantly enrol + Teams notify
+  Does NOT create ACE opportunity (that happens on Qualified stage via /ace/create)
+- POST /ace/create: Called by ace-create agent when deal reaches Qualified
+- POST /ingest: HubSpot deal only (bulk uploads from S3 poller)
+- POST /webhook/instantly: Reply/bounce/open events (file-backed persistence)
+- GET /deals/pipeline: Returns deals by stage for ops and ACE agents
+- POST /deals/{id}/update: Updates a single deal property
+- POST /mcp/architecture: Generates AWS architecture via Bedrock Claude Sonnet
+- GET /config/companies-house-key: Returns CH key from Secrets Manager for agents
+
+SECURITY:
+- All endpoints except /health require X-API-Key header
+- Key stored in Secrets Manager: cloudiqs/{STACK_NAME}/bridge/api-key
+- Rate limits applied per API key (simple in-memory sliding window)
 """
 
 import asyncio
 import json
 import logging
 import os
+import secrets
+import time
+import uuid
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from pythonjsonlogger import jsonlogger
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.models import LeadPayload, IngestPayload, WebhookPayload
 from app import hubspot, instantly, ace, teams
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+# ── Logging (structured JSON for CloudWatch) ─────────────────────────────────
+
+def _configure_logging() -> None:
+    handler = logging.StreamHandler()
+    formatter = jsonlogger.JsonFormatter(
+        fmt="%(asctime)s %(levelname)s %(name)s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%SZ",
+        rename_fields={"asctime": "timestamp", "levelname": "level", "name": "logger"},
+    )
+    handler.setFormatter(formatter)
+    root = logging.getLogger()
+    root.handlers = [handler]
+    root.setLevel(logging.INFO)
+
+
+_configure_logging()
 logger = logging.getLogger("bridge")
 
-# Persistent storage for webhook events
+
+# ── Webhook event persistence ─────────────────────────────────────────────────
+
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 WEBHOOK_FILE = DATA_DIR / "webhook_events.json"
 MAX_WEBHOOK_EVENTS = 200
@@ -42,10 +76,10 @@ def _load_events_from_disk() -> list:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         if WEBHOOK_FILE.exists():
             events = json.loads(WEBHOOK_FILE.read_text())
-            logger.info(f"Loaded {len(events)} webhook events from {WEBHOOK_FILE}")
+            logger.info("webhook_events_loaded", extra={"count": len(events)})
             return events
     except Exception as e:
-        logger.warning(f"Could not load webhook events from disk: {e}")
+        logger.warning("webhook_events_load_failed", extra={"error": str(e)})
     return []
 
 
@@ -55,49 +89,217 @@ def _save_events_to_disk(events: list) -> None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         WEBHOOK_FILE.write_text(json.dumps(events))
     except Exception as e:
-        logger.error(f"Could not persist webhook events: {e}")
+        logger.error("webhook_events_save_failed", extra={"error": str(e)})
 
+
+# ── Auth configuration ────────────────────────────────────────────────────────
+
+_BRIDGE_API_KEY: str = ""
+_BRIDGE_AUTH_ENABLED: bool = os.environ.get("BRIDGE_AUTH_ENABLED", "true").lower() == "true"
+
+# Paths that do not require auth
+_AUTH_EXEMPT_PATHS = {"/health", "/docs", "/openapi.json", "/redoc"}
+
+# Rate limits: path_prefix -> (max_requests, window_seconds)
+_RATE_LIMITS: dict = {
+    "/lead": (100, 3600),
+    "/ingest": (20, 3600),
+    "/mcp/": (200, 3600),
+    "/webhook/": (500, 3600),
+    "/ace/": (50, 3600),
+    "/deals/": (200, 3600),
+}
+
+# In-memory rate limit counters: (path_prefix, api_key) -> [timestamp, ...]
+_rate_counters: dict = defaultdict(list)
+_rate_lock = asyncio.Lock()
+
+
+def _load_bridge_api_key() -> str:
+    """Load bridge API key from Secrets Manager. Falls back to a generated key if not set."""
+    from app.config import get_secret, is_dummy
+    key = get_secret("bridge/api-key")
+    if is_dummy(key):
+        if not _BRIDGE_AUTH_ENABLED:
+            logger.info("bridge_auth_disabled")
+            return ""
+        generated = secrets.token_urlsafe(32)
+        logger.warning(
+            "bridge_api_key_not_configured",
+            extra={
+                "action": "generated_fallback_key",
+                "hint": "Store this in Secrets Manager: cloudiqs/{STACK}/bridge/api-key",
+                "key": generated,
+            },
+        )
+        return generated
+    logger.info("bridge_api_key_loaded")
+    return key
+
+
+# ── Startup / lifespan ────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _webhook_events
+    global _webhook_events, _BRIDGE_API_KEY
     _webhook_events = _load_events_from_disk()
+    _BRIDGE_API_KEY = _load_bridge_api_key()
+    logger.info(
+        "bridge_started",
+        extra={"auth_enabled": _BRIDGE_AUTH_ENABLED, "version": "7.1.0"},
+    )
     yield
+    logger.info("bridge_stopped")
 
 
-app = FastAPI(title="CloudiQS Bridge", version="7.1.0", lifespan=lifespan)
+# ── FastAPI app ───────────────────────────────────────────────────────────────
+
+app = FastAPI(
+    title="CloudiQS Bridge",
+    version="7.1.0",
+    description="Routes AI agent output to HubSpot, Instantly, ACE, Teams, and Partner Central.",
+    lifespan=lifespan,
+)
 
 # Daily stats
 _stats = {"date": "", "total_leads": 0, "duplicates": 0, "by_campaign": {}}
+_start_time = time.time()
 
 
-def _reset_stats_if_new_day():
+def _reset_stats_if_new_day() -> None:
     today = datetime.now().strftime("%Y-%m-%d")
     if _stats["date"] != today:
-        _stats["date"] = today
-        _stats["total_leads"] = 0
-        _stats["duplicates"] = 0
-        _stats["by_campaign"] = {}
+        _stats.update({"date": today, "total_leads": 0, "duplicates": 0, "by_campaign": {}})
 
+
+# ── Middleware: request IDs ───────────────────────────────────────────────────
+
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    """Adds X-Request-ID to every request and response for log correlation."""
+
+    async def dispatch(self, request: Request, call_next):
+        request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+        request.state.request_id = request_id
+        start = time.time()
+        response = await call_next(request)
+        duration_ms = int((time.time() - start) * 1000)
+        response.headers["X-Request-ID"] = request_id
+        logger.info(
+            "request",
+            extra={
+                "method": request.method,
+                "path": request.url.path,
+                "status": response.status_code,
+                "duration_ms": duration_ms,
+                "request_id": request_id,
+            },
+        )
+        return response
+
+
+# ── Middleware: auth + rate limiting ──────────────────────────────────────────
+
+class AuthRateLimitMiddleware(BaseHTTPMiddleware):
+    """
+    1. Checks X-API-Key header (skips /health and docs paths).
+    2. Applies per-key rate limits by endpoint prefix.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+
+        # Skip auth for exempt paths
+        if path in _AUTH_EXEMPT_PATHS:
+            return await call_next(request)
+
+        # Auth check
+        if _BRIDGE_AUTH_ENABLED:
+            api_key = request.headers.get("X-API-Key", "")
+            if not api_key or api_key != _BRIDGE_API_KEY:
+                logger.warning(
+                    "auth_rejected",
+                    extra={"path": path, "has_key": bool(api_key)},
+                )
+                return JSONResponse(
+                    status_code=401,
+                    content={"error": "Missing or invalid X-API-Key header"},
+                )
+        else:
+            api_key = "noauth"
+
+        # Rate limit check
+        now = time.time()
+        for prefix, (max_req, window) in _RATE_LIMITS.items():
+            if path.startswith(prefix):
+                bucket_key = (prefix, api_key)
+                async with _rate_lock:
+                    timestamps = _rate_counters[bucket_key]
+                    # Purge timestamps outside the window
+                    _rate_counters[bucket_key] = [t for t in timestamps if now - t < window]
+                    if len(_rate_counters[bucket_key]) >= max_req:
+                        logger.warning(
+                            "rate_limit_exceeded",
+                            extra={"path": path, "prefix": prefix, "limit": max_req},
+                        )
+                        return JSONResponse(
+                            status_code=429,
+                            content={
+                                "error": f"Rate limit exceeded: {max_req} requests per {window}s"
+                            },
+                        )
+                    _rate_counters[bucket_key].append(now)
+                break
+
+        return await call_next(request)
+
+
+app.add_middleware(RequestIDMiddleware)
+app.add_middleware(AuthRateLimitMiddleware)
+
+
+# ── Health and stats ──────────────────────────────────────────────────────────
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "2.0.0", "time": datetime.now().isoformat()}
+    """Health check — no auth required. Enhanced with operational metrics."""
+    async with _webhook_lock:
+        webhook_count = len(_webhook_events)
+        unprocessed = sum(1 for e in _webhook_events if not e.get("processed"))
+    return {
+        "status": "ok",
+        "version": "7.1.0",
+        "uptime_seconds": int(time.time() - _start_time),
+        "time": datetime.now().isoformat(),
+        "webhook_events_total": webhook_count,
+        "webhook_events_unprocessed": unprocessed,
+        "auth_enabled": _BRIDGE_AUTH_ENABLED,
+    }
 
 
 @app.get("/stats")
 async def stats():
+    """Daily lead counts by campaign."""
     _reset_stats_if_new_day()
     return _stats
 
 
+# ── Lead pipeline ─────────────────────────────────────────────────────────────
+
 @app.post("/lead")
 async def create_lead(lead: LeadPayload):
-    """Full lead pipeline: HubSpot contact + deal + Instantly + Teams.
-    NO ACE creation here. ACE happens on Qualified stage via /ace/create.
+    """Full lead pipeline: HubSpot contact + deal + Instantly enrol + Teams notify.
+    ACE opportunity is NOT created here — only on Qualified stage via /ace/create.
     """
     _reset_stats_if_new_day()
-    logger.info(f"Lead: {lead.email} | {lead.company} | ICP={lead.icp_score} | {lead.campaign}")
+    logger.info(
+        "lead_received",
+        extra={
+            "email": lead.email,
+            "company": lead.company,
+            "icp_score": lead.icp_score,
+            "campaign": lead.campaign,
+        },
+    )
 
     result = {
         "status": "created",
@@ -108,24 +310,19 @@ async def create_lead(lead: LeadPayload):
         "instantly_lead_id": None,
     }
 
-    # 1. HubSpot contact
     contact_id = await hubspot.create_contact(lead)
     result["hubspot_contact_id"] = contact_id
 
-    # 2. HubSpot deal (associated with contact)
     if contact_id:
         deal_id = await hubspot.create_deal(lead, contact_id)
         result["hubspot_deal_id"] = deal_id
 
-    # 3. Instantly enrolment (only if email and campaign exist)
     if lead.email and lead.campaign:
         instantly_id = await instantly.enrol(lead)
         result["instantly_lead_id"] = instantly_id
 
-    # 4. Teams notification
     await teams.notify_lead({**lead.dict(), **result})
 
-    # 5. Stats
     _stats["total_leads"] += 1
     camp = lead.campaign or "unknown"
     _stats["by_campaign"][camp] = _stats["by_campaign"].get(camp, 0) + 1
@@ -139,7 +336,10 @@ async def ingest(payload: IngestPayload):
     Used by S3 poller and manual uploads.
     """
     _reset_stats_if_new_day()
-    logger.info(f"Ingest: {payload.company} | {payload.campaign}")
+    logger.info(
+        "ingest_received",
+        extra={"company": payload.company, "campaign": payload.campaign},
+    )
 
     deal_id = await hubspot.create_ingest_deal(payload)
 
@@ -149,16 +349,97 @@ async def ingest(payload: IngestPayload):
             f"Deal: {deal_id} | Source: {payload.source}"
         )
 
-    return {"status": "created" if deal_id else "skipped", "company": payload.company, "deal_id": deal_id}
+    return {
+        "status": "created" if deal_id else "skipped",
+        "company": payload.company,
+        "deal_id": deal_id,
+    }
 
+
+@app.get("/lead")
+async def check_lead(email: str = ""):
+    """Check if a contact exists in HubSpot."""
+    if not email:
+        return {"exists": False}
+    contact_id = await hubspot.check_contact_exists(email)
+    return {"exists": bool(contact_id), "contact_id": contact_id}
+
+
+# ── HubSpot deal queries ──────────────────────────────────────────────────────
+
+@app.get("/deals/pipeline")
+async def deals_pipeline(stage: str = "appointmentscheduled", limit: int = 20):
+    """Return deals at a given pipeline stage.
+
+    Used by ace-sow, ace-create, ace-sync, and ops agents to find deals
+    they need to act on.
+
+    Common stage IDs:
+    - appointmentscheduled: New Lead
+    - qualifiedtobuy: Qualified
+    - presentationscheduled: Proposal
+    - decisionmakerboughtin: Proposal Sent
+    - contractsent: Negotiation
+    - closedwon: Closed Won
+    - closedlost: Closed Lost
+    """
+    deals = await hubspot.search_deals_by_stage(stage, limit=min(limit, 100))
+    return {"stage": stage, "count": len(deals), "deals": deals}
+
+
+@app.get("/deals/search")
+async def deals_search(campaign: str = "", stage: str = "", limit: int = 20):
+    """Search deals by campaign and/or stage (both optional)."""
+    filters: dict = {}
+    if stage:
+        filters["dealstage"] = stage
+    if campaign:
+        filters["campaign_vertical"] = campaign
+    if not filters:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "At least one of 'campaign' or 'stage' is required"},
+        )
+    deals = await hubspot.search_deals(filters, limit=min(limit, 100))
+    return {"count": len(deals), "deals": deals}
+
+
+@app.post("/deals/{deal_id}/update")
+async def deal_update(deal_id: str, request: Request):
+    """Update a single property on a HubSpot deal.
+
+    Body: {"property": "sow_status", "value": "Draft"}
+
+    Used by ace-sow to mark deals after SOW generation,
+    and by ace-sync to update deal stages.
+    """
+    body = await request.json()
+    prop = body.get("property")
+    value = body.get("value")
+
+    if not prop or value is None:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "'property' and 'value' are required"},
+        )
+
+    success = await hubspot.update_deal_property(deal_id, prop, str(value))
+    return {
+        "status": "updated" if success else "failed",
+        "deal_id": deal_id,
+        "property": prop,
+        "value": value,
+    }
+
+
+# ── ACE pipeline ──────────────────────────────────────────────────────────────
 
 @app.post("/ace/create")
 async def ace_create(lead: LeadPayload):
     """Create ACE opportunity for a qualified lead.
     Called by ace-create agent when HubSpot deal reaches Qualified.
-    Reads all fields from the lead payload (which ace-create pulls from HubSpot).
     """
-    logger.info(f"ACE create request: {lead.company}")
+    logger.info("ace_create_request", extra={"company": lead.company})
 
     opp_id = await ace.create_opportunity(lead)
 
@@ -179,16 +460,26 @@ async def ace_update_stage(request: Request):
     stage = body.get("stage")
 
     if not opp_id or not stage:
-        return JSONResponse(status_code=400, content={"error": "ace_opportunity_id and stage required"})
+        return JSONResponse(
+            status_code=400,
+            content={"error": "ace_opportunity_id and stage required"},
+        )
 
     success = await ace.update_opportunity_stage(opp_id, stage)
-    return {"status": "updated" if success else "failed", "ace_opportunity_id": opp_id, "stage": stage}
+    return {
+        "status": "updated" if success else "failed",
+        "ace_opportunity_id": opp_id,
+        "stage": stage,
+    }
 
+
+# ── Instantly webhook ─────────────────────────────────────────────────────────
 
 @app.post("/webhook/instantly")
 async def webhook_instantly(request: Request):
     """Handle Instantly webhook events: reply, bounce, open.
     Stores events for sdr-reply-handler to read via /webhook/instantly/recent.
+    File-backed persistence survives container restarts.
     """
     body = await request.json()
     event_type = body.get("event_type", body.get("type", "unknown"))
@@ -196,9 +487,8 @@ async def webhook_instantly(request: Request):
     reply_text = body.get("reply_text", body.get("text", ""))
     campaign_id = body.get("campaign_id", body.get("campaign", ""))
 
-    logger.info(f"Instantly webhook: {event_type} | {email}")
+    logger.info("webhook_received", extra={"event_type": event_type, "email": email})
 
-    # Store the event for sdr-reply-handler (file-backed, survives restarts)
     event = {
         "event_type": event_type,
         "email": email,
@@ -210,18 +500,16 @@ async def webhook_instantly(request: Request):
     }
     async with _webhook_lock:
         _webhook_events.append(event)
-        # Trim to max size (drop oldest)
         while len(_webhook_events) > MAX_WEBHOOK_EVENTS:
             _webhook_events.pop(0)
         _save_events_to_disk(_webhook_events)
 
-    # Notify Teams for replies
     if event_type in ("reply", "reply_received", "responded"):
         await teams.notify(
             f"**Reply Received** | {email}\n"
             f"Campaign: {campaign_id}\n"
             f"Reply: {reply_text[:200] if reply_text else 'no text captured'}\n\n"
-            f"Awaiting classification by sdr-reply-handler."
+            "Awaiting classification by sdr-reply-handler."
         )
 
     return {"status": "received", "event_type": event_type}
@@ -237,22 +525,19 @@ async def webhook_instantly_recent(
     Called by sdr-reply-handler to find replies needing classification.
 
     Args:
-        since: ISO timestamp, only return events after this time
-        unprocessed_only: if true, only return events not yet processed
-        limit: max events to return
+        since: ISO timestamp — only return events after this time
+        unprocessed_only: If true, only return events not yet processed
+        limit: Max events to return (default 50, max 200)
     """
     async with _webhook_lock:
         events = _webhook_events.copy()
 
     if since:
         events = [e for e in events if e["timestamp"] > since]
-
     if unprocessed_only:
         events = [e for e in events if not e.get("processed")]
 
-    # Most recent first
-    events = sorted(events, key=lambda e: e["timestamp"], reverse=True)[:limit]
-
+    events = sorted(events, key=lambda e: e["timestamp"], reverse=True)[:min(limit, 200)]
     return {"events": events, "total": len(events)}
 
 
@@ -272,10 +557,12 @@ async def webhook_mark_processed(request: Request):
     return {"marked": count}
 
 
+# ── Config endpoints ──────────────────────────────────────────────────────────
+
 @app.get("/config/companies-house-key")
 async def config_companies_house_key():
     """Return the Companies House API key from Secrets Manager.
-    Agents call this endpoint to get the key rather than needing it in env.
+    Agents call this endpoint to get the key at runtime — key is never hardcoded.
     Secret path: cloudiqs/{STACK_NAME}/companies-house/api-key
     """
     from app.config import get_secret, is_dummy
@@ -288,22 +575,13 @@ async def config_companies_house_key():
     return {"api_key": key}
 
 
-@app.get("/lead")
-async def check_lead(email: str = ""):
-    """Check if a contact exists in HubSpot."""
-    if not email:
-        return {"exists": False}
-    contact_id = await hubspot.check_contact_exists(email)
-    return {"exists": bool(contact_id), "contact_id": contact_id}
-
-
-# ── MCP Proxy Endpoints ───────────────────────────────────────────────
-# These let agents call Partner Central MCP through the bridge
-# instead of needing direct SigV4 auth in their sandbox
+# ── MCP proxy endpoints ───────────────────────────────────────────────────────
+# Let agents call Partner Central and Bedrock through the bridge
+# without needing SigV4 auth in their sandbox.
 
 @app.post("/mcp/profile")
 async def mcp_profile(request: Request):
-    """Get AWS-enriched customer profile. Detects AWS customer signal."""
+    """Get AWS-enriched customer profile from Partner Central."""
     from app import mcp_client
     body = await request.json()
     company = body.get("company", "")
@@ -315,7 +593,7 @@ async def mcp_profile(request: Request):
 
 @app.post("/mcp/funding")
 async def mcp_funding(request: Request):
-    """Check funding eligibility for an ACE opportunity."""
+    """Check MAP/WAR/POC funding eligibility for an ACE opportunity."""
     from app import mcp_client
     body = await request.json()
     opp_id = body.get("opportunity_id", "")
@@ -337,7 +615,7 @@ async def mcp_pipeline(request: Request):
 
 @app.post("/mcp/sales-play")
 async def mcp_sales_play(request: Request):
-    """Generate a sales play for an opportunity."""
+    """Generate a sales play for an ACE opportunity."""
     from app import mcp_client
     body = await request.json()
     opp_id = body.get("opportunity_id", "")
@@ -349,7 +627,7 @@ async def mcp_sales_play(request: Request):
 
 @app.post("/mcp/next-steps")
 async def mcp_next_steps(request: Request):
-    """Get next steps to advance an opportunity."""
+    """Get next steps to advance an ACE opportunity."""
     from app import mcp_client
     body = await request.json()
     opp_id = body.get("opportunity_id", "")
@@ -370,3 +648,51 @@ async def mcp_message(request: Request):
         return JSONResponse(status_code=400, content={"error": "message required"})
     result = await mcp_client.send_message(message, catalog=catalog)
     return result or {"error": "MCP request failed"}
+
+
+@app.post("/mcp/architecture")
+async def mcp_architecture(request: Request):
+    """Generate an AWS architecture recommendation for SOW documents.
+
+    Uses Bedrock Claude Sonnet to create a tailored architecture based on
+    the customer's requirements and service type.
+
+    Body:
+        requirements: Customer pain points and technical requirements (free text)
+        service_type: migration | vmware | msp | agentbakery | security | startup | smb
+        company: Customer company name
+
+    Returns:
+        architecture: Markdown string with overview, ASCII diagram, service list,
+                      key decisions, security notes, and AWS funding opportunities.
+    """
+    from app import architect
+    body = await request.json()
+    requirements = body.get("requirements", "")
+    service_type = body.get("service_type", "migration")
+    company = body.get("company", "Unknown")
+
+    if not requirements:
+        return JSONResponse(status_code=400, content={"error": "requirements required"})
+
+    architecture = await architect.generate_architecture(
+        requirements=requirements,
+        service_type=service_type,
+        company=company,
+    )
+
+    if not architecture:
+        # Bedrock unavailable — return static fallback with TBC markers
+        architecture = (
+            f"## Architecture for {company}\n\n"
+            "*[TBC — Bedrock unavailable. Sita to complete this section.]*\n\n"
+            f"Service type: {service_type}\n\n"
+            f"Requirements: {requirements}"
+        )
+        logger.warning("architecture_fallback_used", extra={"company": company})
+
+    return {
+        "company": company,
+        "service_type": service_type,
+        "architecture": architecture,
+    }

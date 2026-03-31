@@ -164,7 +164,7 @@ Read `bridge/Dockerfile`. Verify:
 
 Read `scripts/register-cron-jobs.sh`. Verify:
 - The preflight check `[0/3] Preflight` block is present and checks `openclaw cron add --help`
-- All 46 `add_job` calls are present (count them)
+- All 48 `add_job` calls are present (count them — 48 cron entries for 46 agents, some run multiple times daily)
 - No `add_job` call is missing required arguments (`--name`, `--schedule`, `--tz`, `--agent`, `--model`, `--message`)
 - Schedule times use `Europe/London` timezone
 - The bridge URL in all message strings is `http://localhost:8787/lead`

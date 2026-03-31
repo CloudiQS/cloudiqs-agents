@@ -1,0 +1,306 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  CloudiQS Engine — EC2 instance, IAM role, security group, and S3 uploads bucket.
+  Deploy with: aws cloudformation deploy --template-file infra/cloudformation.yml
+    --stack-name cloudiqs-engine --capabilities CAPABILITY_NAMED_IAM --region eu-west-1
+    --parameter-overrides InstanceType=t3.large KeyName=YOUR_KEY_PAIR
+
+Parameters:
+  StackName:
+    Type: String
+    Default: cloudiqs-engine
+    Description: Used as prefix for all resource names. Change per environment.
+
+  InstanceType:
+    Type: String
+    Default: t3.large
+    AllowedValues: [t3.medium, t3.large, t3.xlarge, m6i.large, m6i.xlarge]
+    Description: >
+      t3.large (2 vCPU, 8GB) is the minimum for 46 agents + Docker bridge.
+      Use t3.xlarge or m6i.large for production.
+
+  AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
+    Description: Latest Ubuntu 22.04 LTS AMI (fetched from SSM Parameter Store).
+
+  GithubOrgRepo:
+    Type: String
+    Default: CloudiQS/cloudiqs-agents
+    Description: GitHub org/repo for OIDC trust policy (e.g. CloudiQS/cloudiqs-agents).
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC to deploy the instance into.
+
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet for the EC2 instance (private subnet recommended).
+
+
+Resources:
+
+  # ── S3 Uploads Bucket ──────────────────────────────────────────────────────
+
+  UploadsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${StackName}-uploads-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: stack
+          Value: !Ref StackName
+
+  # ── IAM: Instance Role ────────────────────────────────────────────────────
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${StackName}-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # SSM Session Manager — for remote management without SSH
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: cloudiqs-engine-permissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Secrets Manager — read all secrets under stack prefix
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:cloudiqs/${StackName}/*"
+
+              # S3 uploads bucket
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                  - s3:DeleteObject
+                Resource:
+                  - !GetAtt UploadsBucket.Arn
+                  - !Sub "${UploadsBucket.Arn}/*"
+
+              # Bedrock — for architecture generation and AI models
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                  - bedrock:Converse
+                  - bedrock:ConverseStream
+                Resource:
+                  - !Sub "arn:aws:bedrock:us-east-1::foundation-model/us.anthropic.claude-sonnet-4-6-20251101"
+                  - !Sub "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0"
+                  - !Sub "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0"
+                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/*"
+
+              # STS — assume cross-account role for Partner Central MCP
+              - Effect: Allow
+                Action: sts:AssumeRole
+                Resource: "arn:aws:iam::349440382087:role/CloudiQS-PartnerCentral-MCP"
+
+              # CloudWatch Logs — for structured log export
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/cloudiqs/${StackName}/*"
+
+      Tags:
+        - Key: stack
+          Value: !Ref StackName
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "${StackName}-profile"
+      Roles:
+        - !Ref InstanceRole
+
+  # ── IAM: GitHub Actions Deploy Role ───────────────────────────────────────
+
+  GitHubDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: github-deploy
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub "arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                "token.actions.githubusercontent.com:aud": sts.amazonaws.com
+              StringLike:
+                "token.actions.githubusercontent.com:sub": !Sub "repo:${GithubOrgRepo}:*"
+      Policies:
+        - PolicyName: deploy-via-ssm
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:SendCommand
+                  - ssm:GetCommandInvocation
+                  - ssm:ListCommandInvocations
+                Resource: "*"
+              - Effect: Allow
+                Action: ec2:DescribeInstances
+                Resource: "*"
+      Tags:
+        - Key: stack
+          Value: !Ref StackName
+
+  # ── Security Group ────────────────────────────────────────────────────────
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${StackName}-sg"
+      GroupDescription: >
+        CloudiQS Engine EC2 instance. No inbound ports open.
+        All management via SSM Session Manager. Bridge on localhost only.
+      VpcId: !Ref VpcId
+      # No ingress rules — all inbound blocked
+      # SSM Agent uses outbound HTTPS to AWS endpoints
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS outbound (AWS APIs, HubSpot, Instantly, Teams)
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP outbound (package installs, git)
+      Tags:
+        - Key: Name
+          Value: !Sub "${StackName}-sg"
+        - Key: stack
+          Value: !Ref StackName
+
+  # ── EC2 Instance ──────────────────────────────────────────────────────────
+
+  Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      IamInstanceProfile: !Ref InstanceProfile
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !GetAtt SecurityGroup.GroupId
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 30
+            VolumeType: gp3
+            Encrypted: true
+            DeleteOnTermination: true
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euo pipefail
+          exec > /var/log/user-data.log 2>&1
+
+          echo "=== CloudiQS Engine Bootstrap ==="
+          export STACK_NAME="${StackName}"
+          export AWS_REGION="${AWS::Region}"
+
+          # Update system
+          apt-get update -y
+          apt-get upgrade -y
+
+          # Install Docker
+          apt-get install -y ca-certificates curl gnupg lsb-release git
+          install -m 0755 -d /etc/apt/keyrings
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+            | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+            https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
+            > /etc/apt/sources.list.d/docker.list
+          apt-get update -y
+          apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+          usermod -aG docker ubuntu
+          systemctl enable docker
+          systemctl start docker
+
+          # Install AWS SSM Agent (usually pre-installed on Ubuntu 22.04 AMI)
+          snap install amazon-ssm-agent --classic || true
+          systemctl enable snap.amazon-ssm-agent.amazon-ssm-agent.service || true
+          systemctl start snap.amazon-ssm-agent.amazon-ssm-agent.service || true
+
+          # Install OpenClaw
+          # TODO: Replace with actual OpenClaw install command once provided
+          # Example: curl -fsSL https://install.openclaw.io | bash
+          echo "OPENCLAW_INSTALL_PLACEHOLDER — add install command here"
+
+          # Clone repo
+          sudo -u ubuntu git clone https://github.com/CloudiQS/cloudiqs-agents.git \
+            /home/ubuntu/cloudiqs-engine
+
+          # Configure git to use deploy key if present
+          if [ -f /home/ubuntu/.ssh/deploy_key ]; then
+            sudo -u ubuntu bash -c 'cat > ~/.ssh/config <<EOF
+          Host github.com
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+          EOF'
+          fi
+
+          # Deploy bridge
+          sudo -u ubuntu STACK_NAME="${StackName}" AWS_REGION="${AWS::Region}" \
+            bash /home/ubuntu/cloudiqs-engine/deploy.sh
+
+          echo "=== Bootstrap complete ==="
+      Tags:
+        - Key: Name
+          Value: !Sub "${StackName}-instance"
+        - Key: stack
+          Value: !Ref StackName
+
+
+Outputs:
+  InstanceId:
+    Description: EC2 instance ID — set this as GitHub Actions secret EC2_INSTANCE_ID
+    Value: !Ref Instance
+
+  InstanceArn:
+    Description: EC2 instance ARN
+    Value: !Sub "arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/${Instance}"
+
+  GitHubDeployRoleArn:
+    Description: GitHub Actions deploy role ARN — set this as GitHub Actions secret AWS_DEPLOY_ROLE_ARN
+    Value: !GetAtt GitHubDeployRole.Arn
+
+  UploadsBucketName:
+    Description: S3 uploads bucket name
+    Value: !Ref UploadsBucket
+
+  InstanceRoleName:
+    Description: IAM role name attached to the instance
+    Value: !Ref InstanceRole

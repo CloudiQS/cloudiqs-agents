@@ -1,5 +1,5 @@
 #!/bin/bash
-# Register all 46 agent cron jobs in OpenClaw.
+# Register all 48 cron jobs for 46 agents in OpenClaw.
 # Clears ALL existing jobs first to prevent duplicates.
 # Run via deploy.sh or manually.
 set -e
@@ -65,7 +65,7 @@ if [ "$REMAINING" != "0" ] 2>/dev/null; then
     echo -e "  ${YELLOW}Warning: $REMAINING jobs still remain. Continuing anyway.${NC}"
 fi
 
-echo -e "${YELLOW}[2/3] Registering 46 agents...${NC}"
+echo -e "${YELLOW}[2/3] Registering 48 cron jobs for 46 agents...${NC}"
 
 REGISTERED=0
 FAILED=0
@@ -286,7 +286,7 @@ echo -e "  Total active: $TOTAL"
 if [ "$REGISTERED" -ge 40 ]; then
     echo -e "  ${GREEN}Cron registration complete${NC}"
 else
-    echo -e "  ${RED}Warning: expected 46+ jobs but got $REGISTERED${NC}"
+    echo -e "  ${RED}Warning: expected 48+ jobs but got $REGISTERED${NC}"
 fi
 
 echo ""
