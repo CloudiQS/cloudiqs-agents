@@ -133,8 +133,14 @@ else
   ACTION="update-stack"
 fi
 
+# WSL: aws.exe needs a Windows path (C:\...), not a POSIX WSL path (/mnt/c/...)
+_TEMPLATE_PATH="${REPO_ROOT}/${TEMPLATE}"
+if command -v wslpath >/dev/null 2>&1 && [ -n "${_AWS_EXE:-}" ]; then
+    _TEMPLATE_PATH=$(wslpath -w "${_TEMPLATE_PATH}")
+fi
+
 aws cloudformation deploy \
-  --template-file "${REPO_ROOT}/${TEMPLATE}" \
+  --template-file "${_TEMPLATE_PATH}" \
   --stack-name "${STACK_NAME}" \
   --region "${REGION}" \
   --capabilities CAPABILITY_NAMED_IAM \
