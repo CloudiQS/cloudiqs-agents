@@ -21,7 +21,7 @@ echo -e "${YELLOW}[0/3] Preflight: verifying openclaw cron add flag syntax...${N
 HELP_OUTPUT=$(openclaw cron add --help 2>&1 || true)
 MISSING_FLAGS=""
 for FLAG in --name --schedule --tz --agent --model --message --timeout; do
-    if ! echo "$HELP_OUTPUT" | grep -qF "$FLAG"; then
+    if ! echo "$HELP_OUTPUT" | grep -qF -- "$FLAG"; then
         MISSING_FLAGS="$MISSING_FLAGS $FLAG"
     fi
 done
