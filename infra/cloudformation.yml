@@ -251,9 +251,7 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupName: !Sub "${StackName}-sg"
-      GroupDescription: >
-        CloudiQS Engine EC2 instance. No inbound ports open.
-        All management via SSM Session Manager. Bridge on localhost only.
+      GroupDescription: "CloudiQS Engine EC2 - no inbound ports open - managed via SSM"
       VpcId: !Ref VPC
       SecurityGroupEgress:
         - IpProtocol: tcp
