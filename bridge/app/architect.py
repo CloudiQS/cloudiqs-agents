@@ -5,16 +5,25 @@ Uses Bedrock Claude Sonnet to generate architecture recommendations for SOW docu
 
 import asyncio
 import logging
+import os
 from typing import Optional
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 logger = logging.getLogger("bridge")
 
 # Cross-region inference — Claude Sonnet in us-east-1
 BEDROCK_REGION = "us-east-1"
-BEDROCK_MODEL = "us.anthropic.claude-sonnet-4-6-20251101"
+BEDROCK_MODEL = os.environ.get(
+    "ARCHITECT_MODEL_ID",
+    "us.anthropic.claude-sonnet-4-6-20251101",
+)
+
+# Input length limits — guard against token exhaustion and prompt injection
+MAX_REQUIREMENTS_LEN = 4000
+MAX_COMPANY_LEN = 200
 
 SYSTEM_PROMPT = """You are a Senior AWS Solutions Architect at CloudiQS, an AWS Advanced Consulting \
 Partner based in Harpenden, UK. You design cloud architectures for UK mid-market companies \
@@ -87,7 +96,29 @@ CI/CD pipelines for rapid deployment.",
     "smb": "The customer is a UK SMB moving to AWS. Focus on simplicity, cost control, \
 managed services to reduce operational burden, and a migration from on-premises or a \
 legacy hosting provider.",
+    "switcher": "The customer is moving from another AWS consulting partner to CloudiQS. \
+Focus on a Well-Architected Review to baseline their current state, quick-win cost \
+optimisations, and a governance handover plan (IAM, tagging, cost allocation tags). \
+Avoid proposing large architectural changes until the review is complete.",
+    "awsfunding": "The customer qualifies for AWS funding (MAP, POC credits, or CEI). \
+Focus on the architecture baseline required for MAP eligibility: a Well-Architected Review, \
+a migration plan with phased milestones, and the workload inventory AWS requires to approve \
+the fund application. Include the funding programme details prominently.",
 }
+
+# Module-level singleton — created once, reused across requests
+_bedrock_client = None
+
+
+def _get_bedrock_client():
+    global _bedrock_client
+    if _bedrock_client is None:
+        _bedrock_client = boto3.client(
+            "bedrock-runtime",
+            region_name=BEDROCK_REGION,
+            config=Config(connect_timeout=10, read_timeout=120),
+        )
+    return _bedrock_client
 
 
 def _get_service_context(service_type: str) -> str:
@@ -101,7 +132,7 @@ def _get_service_context(service_type: str) -> str:
 def _call_bedrock(requirements: str, service_type: str, company: str) -> Optional[str]:
     """Synchronous Bedrock converse call — run via asyncio.to_thread."""
     try:
-        client = boto3.client("bedrock-runtime", region_name=BEDROCK_REGION)
+        client = _get_bedrock_client()
         service_context = _get_service_context(service_type)
 
         user_message = (
@@ -119,19 +150,21 @@ def _call_bedrock(requirements: str, service_type: str, company: str) -> Optiona
             inferenceConfig={"maxTokens": 1500, "temperature": 0.2},
         )
 
+        # Bedrock converse() returns content blocks with a "text" key directly —
+        # no "type" field. Check for the key, not a type discriminator.
         output = response.get("output", {}).get("message", {}).get("content", [])
-        if output and output[0].get("type") == "text":
+        if output and "text" in output[0]:
             return output[0]["text"]
 
-        logger.error(f"Bedrock returned unexpected structure: {response}")
+        logger.error("bedrock_unexpected_response", extra={"response_keys": list(response.keys())})
         return None
 
     except ClientError as e:
         error_code = e.response["Error"]["Code"]
-        logger.error(f"Bedrock ClientError ({error_code}): {e}")
+        logger.error("bedrock_client_error", extra={"error_code": error_code, "error": str(e)})
         return None
     except Exception as e:
-        logger.error(f"Bedrock architecture generation failed: {e}")
+        logger.error("bedrock_architecture_failed", extra={"error": str(e)})
         return None
 
 
@@ -143,19 +176,24 @@ async def generate_architecture(
     """Generate an AWS architecture recommendation for SOW inclusion.
 
     Args:
-        requirements: Customer pain points and technical requirements (free text)
+        requirements: Customer pain points and technical requirements (free text,
+                      truncated to MAX_REQUIREMENTS_LEN characters)
         service_type: migration | vmware | msp | agentbakery | security | startup | smb | etc.
-        company: Customer company name
+        company: Customer company name (truncated to MAX_COMPANY_LEN characters)
 
     Returns:
         Markdown string with architecture overview, ASCII diagram, service list,
         key decisions, security notes, and funding opportunities.
         Returns None if Bedrock is unavailable.
     """
-    logger.info(f"Generating architecture: {company} | {service_type}")
+    # Enforce length limits before sending to Bedrock
+    requirements = requirements[:MAX_REQUIREMENTS_LEN]
+    company = company[:MAX_COMPANY_LEN]
+
+    logger.info("architecture_generating", extra={"company": company, "service_type": service_type})
     result = await asyncio.to_thread(_call_bedrock, requirements, service_type, company)
     if result:
-        logger.info(f"Architecture generated for {company} ({len(result)} chars)")
+        logger.info("architecture_generated", extra={"company": company, "chars": len(result)})
     else:
-        logger.warning(f"Architecture generation failed for {company} — Bedrock unavailable")
+        logger.warning("architecture_generation_failed", extra={"company": company})
     return result
