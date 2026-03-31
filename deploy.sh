@@ -108,15 +108,23 @@ fi
 
 # Step 3: Restart gateway
 echo -e "${YELLOW}[3/7] Restarting OpenClaw gateway...${NC}"
-export XDG_RUNTIME_DIR=/run/user/$(id -u)
-export PATH=/usr/local/bin:$PATH
-openclaw gateway restart 2>/dev/null || openclaw gateway start 2>/dev/null || true
-sleep 3
-echo -e "  ${GREEN}Gateway restarted${NC}"
+if command -v openclaw >/dev/null 2>&1; then
+    export XDG_RUNTIME_DIR=/run/user/$(id -u)
+    export PATH=/usr/local/bin:$PATH
+    openclaw gateway restart 2>/dev/null || openclaw gateway start 2>/dev/null || true
+    sleep 3
+    echo -e "  ${GREEN}Gateway restarted${NC}"
+else
+    echo -e "  ${YELLOW}OpenClaw not installed — skipping gateway. Install via SSM then re-run deploy.sh${NC}"
+fi
 
 # Step 4: Register cron jobs
 echo -e "${YELLOW}[4/7] Registering cron jobs...${NC}"
-bash "$REPO_DIR/scripts/register-cron-jobs.sh"
+if command -v openclaw >/dev/null 2>&1; then
+    bash "$REPO_DIR/scripts/register-cron-jobs.sh"
+else
+    echo -e "  ${YELLOW}OpenClaw not installed — skipping cron registration. Install via SSM then re-run deploy.sh${NC}"
+fi
 
 # Step 5: Install pollers
 echo -e "${YELLOW}[5/7] Installing pollers...${NC}"
