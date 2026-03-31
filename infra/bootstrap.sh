@@ -20,11 +20,12 @@
 # ────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-# Windows/Git Bash: AWS CLI lives in "Program Files" which may not be in the
-# POSIX PATH visible to bash. Define a shell function so every call to 'aws'
-# below works regardless of PATH state.
-if ! command -v aws >/dev/null 2>&1; then
+# Windows compatibility: AWS CLI may not be in the POSIX PATH visible to bash.
+# Covers Git Bash (/c/...) and WSL (/mnt/c/...) mount conventions.
+if ! aws --version >/dev/null 2>&1; then
     for _win_aws in \
+        "/mnt/c/Program Files/Amazon/AWSCLIV2/aws.exe" \
+        "/mnt/c/PROGRA~1/Amazon/AWSCLIV2/aws.exe" \
         "/c/Program Files/Amazon/AWSCLIV2/aws.exe" \
         "/c/PROGRA~1/Amazon/AWSCLIV2/aws.exe"; do
         if [ -f "$_win_aws" ]; then
