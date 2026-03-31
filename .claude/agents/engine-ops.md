@@ -11,7 +11,7 @@ You are the CloudiQS Engine operations agent. You check the health of the live E
 
 ## Instance details
 
-- Instance: `i-0e9301730308aa39b` in eu-west-1 (or read from `$EC2_INSTANCE_ID`)
+- Instance: `$EC2_INSTANCE_ID` in eu-west-1 (or read from `$EC2_INSTANCE_ID`)
 - Region: `eu-west-1`
 - Repo path on instance: `/home/ubuntu/cloudiqs-engine`
 - Bridge container: `cloudiqs-bridge` on port 8787
@@ -24,7 +24,7 @@ Use SSM. Never SSH directly. Pattern:
 ```bash
 # 1. Send the command and capture the command ID
 COMMAND_ID=$(aws ssm send-command \
-  --instance-ids "i-0e9301730308aa39b" \
+  --instance-ids "$EC2_INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
   --region eu-west-1 \
   --parameters 'commands=["YOUR COMMAND HERE"]' \
@@ -35,7 +35,7 @@ COMMAND_ID=$(aws ssm send-command \
 for i in $(seq 1 6); do
   STATUS=$(aws ssm get-command-invocation \
     --command-id "$COMMAND_ID" \
-    --instance-id "i-0e9301730308aa39b" \
+    --instance-id "$EC2_INSTANCE_ID" \
     --region eu-west-1 \
     --query "StatusDetails" --output text 2>/dev/null)
   [ "$STATUS" = "Success" ] || [ "$STATUS" = "Failed" ] && break
@@ -45,7 +45,7 @@ done
 # 3. Get the output
 aws ssm get-command-invocation \
   --command-id "$COMMAND_ID" \
-  --instance-id "i-0e9301730308aa39b" \
+  --instance-id "$EC2_INSTANCE_ID" \
   --region eu-west-1 \
   --query "StandardOutputContent" \
   --output text

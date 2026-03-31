@@ -18,7 +18,7 @@ git push origin main
 | Secret | Value | Where to get it |
 |--------|-------|-----------------|
 | `AWS_DEPLOY_ROLE_ARN` | `arn:aws:iam::736956442878:role/github-deploy` | Create this role (see below) |
-| `EC2_INSTANCE_ID` | `i-0e9301730308aa39b` | Your current instance |
+| `EC2_INSTANCE_ID` | `i-YOUR_INSTANCE_ID` | EC2 console → Instances → Instance ID |
 
 The instance ID is a secret, not hardcoded, so you can change instances
 without editing the workflow file.
