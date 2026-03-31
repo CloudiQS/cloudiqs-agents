@@ -20,9 +20,18 @@
 # ────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-# Windows: Git Bash doesn't inherit the system PATH where AWS CLI is installed
+# Windows: Git Bash may not have AWS CLI in PATH (space in "Program Files" breaks
+# simple PATH append). Use a shell function pointing at the full .exe path instead.
 if ! command -v aws >/dev/null 2>&1; then
-    export PATH="$PATH:/c/Program Files/Amazon/AWSCLIV2"
+    for _win_aws in \
+        "/c/Program Files/Amazon/AWSCLIV2/aws.exe" \
+        "/c/PROGRA~1/Amazon/AWSCLIV2/aws.exe"; do
+        if [ -f "$_win_aws" ]; then
+            # shellcheck disable=SC2139
+            alias aws="\"$_win_aws\""
+            break
+        fi
+    done
 fi
 
 STACK_NAME="${STACK_NAME:-cloudiqs-engine}"
