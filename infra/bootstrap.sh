@@ -20,15 +20,17 @@
 # ────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-# Windows: Git Bash may not have AWS CLI in PATH (space in "Program Files" breaks
-# simple PATH append). Use a shell function pointing at the full .exe path instead.
+# Windows/Git Bash: AWS CLI lives in "Program Files" which may not be in the
+# POSIX PATH visible to bash. Define a shell function so every call to 'aws'
+# below works regardless of PATH state.
 if ! command -v aws >/dev/null 2>&1; then
     for _win_aws in \
         "/c/Program Files/Amazon/AWSCLIV2/aws.exe" \
         "/c/PROGRA~1/Amazon/AWSCLIV2/aws.exe"; do
         if [ -f "$_win_aws" ]; then
-            # shellcheck disable=SC2139
-            alias aws="\"$_win_aws\""
+            export _AWS_EXE="$_win_aws"
+            aws() { "$_AWS_EXE" "$@"; }
+            export -f aws
             break
         fi
     done
@@ -86,7 +88,7 @@ read -rp "Press Enter to continue, or Ctrl+C to abort..."
 
 header "0. Preflight checks"
 
-command -v aws  >/dev/null 2>&1 || fail "aws CLI not found. Install from https://aws.amazon.com/cli/"
+aws --version   >/dev/null 2>&1 || fail "aws CLI not found. Install from https://aws.amazon.com/cli/"
 command -v jq   >/dev/null 2>&1 || fail "jq not found. Install with: apt install jq / brew install jq"
 
 ACCOUNT=$(aws sts get-caller-identity --query Account --output text 2>/dev/null) \
