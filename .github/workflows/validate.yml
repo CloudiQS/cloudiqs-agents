@@ -1,0 +1,126 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  validate:
+    name: Validate template, code, and agent config
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ── 1. CloudFormation template validation ──────────────────────────────
+      # cfn-lint validates locally — no AWS credentials required.
+      # aws cloudformation validate-template requires live API access; cfn-lint
+      # catches the same structural errors plus additional rule checks.
+      - name: Install cfn-lint
+        run: pip install cfn-lint
+
+      - name: Validate CloudFormation template
+        run: cfn-lint infra/cloudformation.yml
+
+      # ── 2. Python syntax check (bridge/app/) ──────────────────────────────
+      - name: Check Python syntax (bridge/app/)
+        run: |
+          failed=0
+          for f in bridge/app/*.py; do
+            python3 -c "import ast; ast.parse(open('$f', encoding='utf-8').read())" \
+              && echo "OK  $f" \
+              || { echo "FAIL $f"; failed=1; }
+          done
+          exit $failed
+
+      # ── 3. Count SOUL.md files ─────────────────────────────────────────────
+      - name: Count SOUL.md files (min 46)
+        run: |
+          count=$(find agents -maxdepth 2 -name SOUL.md | wc -l)
+          echo "Found $count SOUL.md files"
+          if [ "$count" -lt 46 ]; then
+            echo "FAIL: expected >= 46 SOUL.md files, found $count"
+            exit 1
+          fi
+          echo "OK"
+
+      # ── 4. Every cron agent has a SOUL.md ─────────────────────────────────
+      - name: Check cron agents have SOUL.md
+        run: |
+          # 4th positional argument to add_job is the agent directory name
+          agents=$(grep '^add_job ' scripts/register-cron-jobs.sh \
+            | awk -F'"' '{print $8}' \
+            | sort -u)
+
+          missing=""
+          for agent in $agents; do
+            [ -f "agents/$agent/SOUL.md" ] || missing="$missing\n  $agent"
+          done
+
+          if [ -n "$missing" ]; then
+            echo -e "FAIL: agents in cron script missing SOUL.md:$missing"
+            exit 1
+          fi
+          echo "OK — all $(echo "$agents" | wc -l | tr -d ' ') cron agents have SOUL.md"
+
+      # ── 5. requirements.txt covers all bridge imports ──────────────────────
+      - name: Check requirements.txt covers bridge/app imports
+        run: |
+          python3 - <<'EOF'
+          import ast, glob, re, sys
+
+          # stdlib modules (Python 3.10+)
+          STDLIB = sys.stdlib_module_names
+
+          # Packages installed transitively (not listed directly in requirements.txt)
+          TRANSITIVE = {"starlette"}
+
+          # Internal package prefix
+          INTERNAL = {"app"}
+
+          imports = set()
+          for path in sorted(glob.glob("bridge/app/*.py")):
+              tree = ast.parse(open(path, encoding="utf-8").read())
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Import):
+                      for alias in node.names:
+                          imports.add(alias.name.split(".")[0])
+                  elif isinstance(node, ast.ImportFrom) and node.module:
+                      imports.add(node.module.split(".")[0])
+
+          third_party = {
+              m for m in imports
+              if m not in STDLIB and m not in TRANSITIVE and m not in INTERNAL
+          }
+
+          # Normalise: lowercase, strip hyphens and underscores
+          def norm(s):
+              return re.sub(r"[-_]", "", s.lower())
+
+          reqs = set()
+          for line in open("bridge/requirements.txt", encoding="utf-8"):
+              line = line.strip()
+              if line and not line.startswith("#") and not line.startswith("-"):
+                  pkg = re.split(r"[=><![\s]", line)[0]
+                  reqs.add(norm(pkg))
+
+          missing = [m for m in sorted(third_party) if norm(m) not in reqs]
+
+          if missing:
+              print(f"FAIL: imports not covered by requirements.txt: {missing}")
+              sys.exit(1)
+
+          print(f"OK — {len(third_party)} third-party imports all covered")
+          EOF
+
+      # ── 6. Docker build dry-run ────────────────────────────────────────────
+      - name: Docker build dry-run (bridge/)
+        run: |
+          docker build --no-cache -t cloudiqs-bridge-validate bridge/
+          echo "OK — Docker build succeeded"
