@@ -18,6 +18,9 @@ Live instance: EC2 in eu-west-1. Bridge runs in Docker. Agents run in OpenClaw s
 - `agents/*/SOUL.md` - Agent instructions (46 agents, all complete)
 - `scripts/` - deploy helpers (register-cron-jobs.sh, s3-upload-poller.py, generate-souls.py, diagnostics.sh)
 - `docs/` - setup guides (SETUP.md, AWS-MCP-SETUP.md)
+- `context/` - CloudiQS GTM knowledge base (ICP, positioning, objections, case studies, pricing, competitors). Reference when writing SOUL.md files or reviewing outreach quality.
+- `.claude/agents/` - Subagents: engine-ops (health checks), agent-builder (new SDR agents), pipeline-reviewer (pre-push checks)
+- `.claude/commands/` - Slash commands: /health-check, /new-agent, /pre-deploy
 - `.github/workflows/deploy.yml` - GitHub Actions CI/CD via SSM
 
 ## Commands
