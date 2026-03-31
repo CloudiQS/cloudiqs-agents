@@ -10,32 +10,22 @@ Connects to the Partner Central agents MCP Server for:
 - Solution matching
 
 Endpoint: https://partnercentral-agents-mcp.us-east-1.api.aws/mcp
-Auth: SigV4 with service name 'partnercentral-agents-mcp', region 'us-east-1'
-Protocol: JSON-RPC 2.0 over HTTPS
-
-KNOWN RISKS (verify in Claude Code before production):
-1. SigV4 signing: headers are signed then passed to httpx. If httpx modifies
-   headers (content-length, host), the signature becomes invalid. May need
-   to use botocore's own HTTP client or requests with aws4auth instead.
-2. SSE streaming: AWS docs say the server supports Server-Sent Events.
-   This code assumes a simple JSON response. If sendMessage returns SSE,
-   this will fail. May need httpx streaming or an SSE client library.
-3. Session expiry: sessions last 48h. Code caches sessionId but does not
-   handle expiry. Add a timestamp check or catch session-expired errors.
+Auth: SigV4 via requests-aws4auth (battle-tested, does not invalidate signatures)
+Protocol: JSON-RPC 2.0 over HTTPS. sendMessage may return SSE — handled below.
 
 Reference: https://docs.aws.amazon.com/partner-central/latest/APIReference/mcp-getting-started.html
 """
 
+import asyncio
 import json
 import logging
-from datetime import datetime
-from typing import Optional, Dict, Any
+from datetime import datetime, timezone
+from typing import Optional, Dict, Tuple
 
 import boto3
-from botocore.auth import SigV4Auth
-from botocore.awsrequest import AWSRequest
+import requests
 from botocore.exceptions import ClientError
-import httpx
+from requests_aws4auth import AWS4Auth
 
 from app.config import REGION, get_secret, is_dummy
 
@@ -45,12 +35,14 @@ MCP_ENDPOINT = "https://partnercentral-agents-mcp.us-east-1.api.aws/mcp"
 MCP_SERVICE = "partnercentral-agents-mcp"
 MCP_REGION = "us-east-1"
 
-# Cache sessions (expire after 48h per AWS docs)
-_sessions: Dict[str, str] = {}
+# Cache sessions with timestamps: {catalog: (session_id, created_at)}
+# Sessions expire after 48h per AWS docs.
+_sessions: Dict[str, Tuple[str, datetime]] = {}
+SESSION_TTL_HOURS = 47  # refresh slightly before the 48h AWS expiry
 
 
-def _get_credentials():
-    """Get AWS credentials for SigV4 signing via cross-account role."""
+def _get_auth() -> AWS4Auth:
+    """Get requests-aws4auth credentials via cross-account role assume."""
     role_arn = get_secret("partner-central/role-arn")
     if is_dummy(role_arn):
         role_arn = "arn:aws:iam::349440382087:role/CloudiQS-PartnerCentral-MCP"
@@ -61,27 +53,65 @@ def _get_credentials():
         RoleSessionName=f"mcp-{int(datetime.now().timestamp())}",
         DurationSeconds=900,
     )
-
-    session = boto3.Session(
-        aws_access_key_id=assumed["Credentials"]["AccessKeyId"],
-        aws_secret_access_key=assumed["Credentials"]["SecretAccessKey"],
-        aws_session_token=assumed["Credentials"]["SessionToken"],
-        region_name=MCP_REGION,
+    creds = assumed["Credentials"]
+    return AWS4Auth(
+        creds["AccessKeyId"],
+        creds["SecretAccessKey"],
+        MCP_REGION,
+        MCP_SERVICE,
+        session_token=creds["SessionToken"],
     )
-    return session.get_credentials().get_frozen_credentials()
 
 
-def _sign_request(method: str, url: str, body: str) -> dict:
-    """Sign a request with SigV4 for the MCP service."""
-    credentials = _get_credentials()
-    request = AWSRequest(
-        method=method,
-        url=url,
-        data=body,
-        headers={"Content-Type": "application/json"},
-    )
-    SigV4Auth(credentials, MCP_SERVICE, MCP_REGION).add_auth(request)
-    return dict(request.headers)
+def _get_cached_session(catalog: str) -> Optional[str]:
+    """Return cached session ID if still valid, else None."""
+    entry = _sessions.get(catalog)
+    if not entry:
+        return None
+    session_id, created_at = entry
+    age_hours = (datetime.now(timezone.utc) - created_at).total_seconds() / 3600
+    if age_hours >= SESSION_TTL_HOURS:
+        del _sessions[catalog]
+        return None
+    return session_id
+
+
+def _parse_sse_or_json(text: str) -> Optional[dict]:
+    """Parse response body that may be plain JSON or SSE (data: {...} lines)."""
+    text = text.strip()
+    if text.startswith("{"):
+        return json.loads(text)
+    # SSE format: accumulate all data: lines into a single response
+    combined: dict = {}
+    for line in text.splitlines():
+        if line.startswith("data:"):
+            chunk = line[5:].strip()
+            if chunk and chunk != "[DONE]":
+                try:
+                    obj = json.loads(chunk)
+                    combined.update(obj)
+                except json.JSONDecodeError:
+                    pass
+    return combined if combined else None
+
+
+def _do_post(body: str) -> Optional[dict]:
+    """Synchronous POST with SigV4 auth. Run via asyncio.to_thread."""
+    try:
+        auth = _get_auth()
+        resp = requests.post(
+            MCP_ENDPOINT,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            auth=auth,
+            timeout=90,
+        )
+        if resp.status_code == 200:
+            return _parse_sse_or_json(resp.text)
+        logger.error(f"MCP request failed {resp.status_code}: {resp.text[:300]}")
+    except Exception as e:
+        logger.error(f"MCP connection error: {e}")
+    return None
 
 
 async def _send_jsonrpc(method: str, params: dict, request_id: int = 1) -> Optional[dict]:
@@ -93,17 +123,7 @@ async def _send_jsonrpc(method: str, params: dict, request_id: int = 1) -> Optio
         "params": params,
     }
     body = json.dumps(payload)
-
-    try:
-        headers = _sign_request("POST", MCP_ENDPOINT, body)
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(MCP_ENDPOINT, content=body, headers=headers)
-            if resp.status_code == 200:
-                return resp.json()
-            logger.error(f"MCP request failed {resp.status_code}: {resp.text[:300]}")
-    except Exception as e:
-        logger.error(f"MCP connection error: {e}")
-    return None
+    return await asyncio.to_thread(_do_post, body)
 
 
 async def initialize() -> bool:
@@ -133,17 +153,20 @@ async def send_message(
     Args:
         message: Natural language query (e.g. "Create a customer profile for Acme Ltd")
         catalog: "AWS" for production, "Sandbox" for testing
-        session_id: Reuse existing session for multi-turn conversations
+        session_id: Reuse existing session for multi-turn conversations (optional override)
 
     Returns:
         Dict with 'text' (agent response), 'sessionId', 'status'
     """
+    # Use caller-supplied session, then cached session (if not expired), then none
+    active_session = session_id or _get_cached_session(catalog)
+
     args = {
         "content": [{"type": "text", "text": message}],
         "catalog": catalog,
     }
-    if session_id:
-        args["sessionId"] = session_id
+    if active_session:
+        args["sessionId"] = active_session
 
     result = await _send_jsonrpc("tools/call", {
         "name": "sendMessage",
@@ -167,8 +190,9 @@ async def send_message(
         if block.get("type") == "text":
             response["text"] += block.get("text", "")
 
+    # Cache new session ID with creation timestamp
     if response["sessionId"]:
-        _sessions[catalog] = response["sessionId"]
+        _sessions[catalog] = (response["sessionId"], datetime.now(timezone.utc))
 
     return response
 

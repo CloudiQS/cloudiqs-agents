@@ -10,7 +10,11 @@ logger = logging.getLogger("bridge")
 
 async def notify(text: str, webhook_key: str = "teams/webhook-url") -> bool:
     """Send a notification to Teams. Returns True on success."""
-    url = get_secret(webhook_key)
+    try:
+        url = get_secret(webhook_key)
+    except Exception as e:
+        logger.warning(f"Teams notify: could not retrieve webhook URL: {e}")
+        return False
     if is_dummy(url):
         logger.warning("Teams webhook not set - skipping notification")
         return False

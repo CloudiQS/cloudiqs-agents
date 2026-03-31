@@ -26,6 +26,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify required secrets are configured
+        run: |
+          MISSING=""
+          [ -z "${{ secrets.AWS_DEPLOY_ROLE_ARN }}" ] && MISSING="$MISSING AWS_DEPLOY_ROLE_ARN"
+          [ -z "${{ secrets.EC2_INSTANCE_ID }}" ]     && MISSING="$MISSING EC2_INSTANCE_ID"
+          if [ -n "$MISSING" ]; then
+            echo "ERROR: The following GitHub Actions secrets are not set:$MISSING"
+            echo "See docs/SETUP.md for instructions on creating the OIDC provider and deploy role."
+            exit 1
+          fi
+          echo "Secrets OK: AWS_DEPLOY_ROLE_ARN and EC2_INSTANCE_ID are set"
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:

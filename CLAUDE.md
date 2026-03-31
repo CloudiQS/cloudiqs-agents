@@ -60,13 +60,13 @@ python3 scripts/generate-souls.py
 - MCP proxy endpoints at `/mcp/*` let agents query Partner Central without SigV4 auth.
 - SDR agents follow 9-step pipeline: signal search, pick company, Companies House verify, find DM, score ICP (6+ to proceed), write email, POST to bridge, update MEMORY, repeat.
 
-## IMPORTANT: Known risks to fix
+## IMPORTANT: Known risks (all fixed in code, verify on first deploy)
 
-1. MCP SigV4 signing (mcp_client.py) is untested against real endpoint. httpx may invalidate signature. Test with Sandbox catalog first. May need `requests-aws4auth` instead of botocore+httpx.
-2. Webhook events stored in-memory (main.py). Container restart loses all events. Add file-based persistence.
-3. `openclaw cron add` flag syntax in register-cron-jobs.sh is assumed, not verified. Check `openclaw cron add --help` before running.
-4. Companies House API key needs injecting into agent environment. Key: `cd51f0ef-a40d-44fb-9437-a804d5465e2e`.
-5. GitHub Actions needs OIDC provider + deploy role created in AWS. See docs/SETUP.md.
+1. **FIXED** MCP SigV4: switched to `requests-aws4auth` in mcp_client.py. Test with `catalog: "Sandbox"` first.
+2. **FIXED** Webhook persistence: file-backed JSON at `/data/webhook_events.json`, mounted as Docker named volume `bridge-data`.
+3. **FIXED** Cron flag syntax: register-cron-jobs.sh now runs preflight check and aborts if flags do not match `openclaw cron add --help`.
+4. **FIXED** Companies House API key: bridge exposes `GET /config/companies-house-key` which reads from Secrets Manager (`companies-house/api-key`). Store the key there. **The key that was in this file has been removed — rotate it at Companies House immediately (it was in git history).**
+5. **FIXED** GitHub Actions: deploy.yml now fails fast with a clear message if `AWS_DEPLOY_ROLE_ARN` or `EC2_INSTANCE_ID` secrets are missing. Follow docs/SETUP.md to create the OIDC provider and deploy role.
 
 ## Do not
 

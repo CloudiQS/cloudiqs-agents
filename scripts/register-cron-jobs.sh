@@ -14,6 +14,29 @@ NOVA="global.amazon.nova-lite-v1:0"
 HAIKU="global.anthropic.claude-haiku-4-5-20251001-v1:0"
 SONNET="global.anthropic.claude-sonnet-4-6"
 
+echo -e "${YELLOW}[0/3] Preflight: verifying openclaw cron add flag syntax...${NC}"
+
+# Check that openclaw supports the flags this script expects.
+# If openclaw uses different names (e.g. --cron instead of --schedule), abort early.
+HELP_OUTPUT=$(openclaw cron add --help 2>&1 || true)
+MISSING_FLAGS=""
+for FLAG in --name --schedule --tz --agent --model --message --timeout; do
+    if ! echo "$HELP_OUTPUT" | grep -qF "$FLAG"; then
+        MISSING_FLAGS="$MISSING_FLAGS $FLAG"
+    fi
+done
+
+if [ -n "$MISSING_FLAGS" ]; then
+    echo -e "  ${RED}ERROR: The following flags were not found in 'openclaw cron add --help':${NC}"
+    echo -e "  ${RED}$MISSING_FLAGS${NC}"
+    echo ""
+    echo -e "  Run 'openclaw cron add --help' manually and update the add_job() function"
+    echo -e "  in this script to match the actual flag names before running."
+    exit 1
+fi
+echo -e "  ${GREEN}Flag syntax OK${NC}"
+echo ""
+
 echo -e "${YELLOW}[1/3] Clearing existing cron jobs...${NC}"
 
 # Get all job IDs and remove them

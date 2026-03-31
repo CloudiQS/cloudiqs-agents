@@ -40,7 +40,9 @@ def get_secret(short_key: str) -> str:
         val = resp["SecretString"]
         _cache[full_key] = val
         return val
-    except ClientError:
+    except Exception:
+        # Catches ClientError (key not found), credential errors (SSO expiry,
+        # no instance profile locally), and any connectivity failures.
         pass
 
     # Fallback to env var: hubspot/api-key -> HUBSPOT_API_KEY

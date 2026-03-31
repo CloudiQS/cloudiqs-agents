@@ -10,8 +10,13 @@ DESIGN DECISIONS:
 - POST /webhook/instantly handles reply/bounce/open events from Instantly
 """
 
+import asyncio
+import json
 import logging
+import os
+from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -22,15 +27,48 @@ from app import hubspot, instantly, ace, teams
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("bridge")
 
-app = FastAPI(title="CloudiQS Bridge", version="7.1.0")
+# Persistent storage for webhook events
+DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
+WEBHOOK_FILE = DATA_DIR / "webhook_events.json"
+MAX_WEBHOOK_EVENTS = 200
+
+_webhook_lock = asyncio.Lock()
+_webhook_events: list = []
+
+
+def _load_events_from_disk() -> list:
+    """Load persisted webhook events from disk. Called once at startup."""
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        if WEBHOOK_FILE.exists():
+            events = json.loads(WEBHOOK_FILE.read_text())
+            logger.info(f"Loaded {len(events)} webhook events from {WEBHOOK_FILE}")
+            return events
+    except Exception as e:
+        logger.warning(f"Could not load webhook events from disk: {e}")
+    return []
+
+
+def _save_events_to_disk(events: list) -> None:
+    """Persist webhook events to disk. Called inside _webhook_lock."""
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        WEBHOOK_FILE.write_text(json.dumps(events))
+    except Exception as e:
+        logger.error(f"Could not persist webhook events: {e}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _webhook_events
+    _webhook_events = _load_events_from_disk()
+    yield
+
+
+app = FastAPI(title="CloudiQS Bridge", version="7.1.0", lifespan=lifespan)
 
 # Daily stats
 _stats = {"date": "", "total_leads": 0, "duplicates": 0, "by_campaign": {}}
-
-# Webhook event storage (in-memory, last 200 events)
-# sdr-reply-handler reads from /webhook/instantly/recent
-_webhook_events = []
-MAX_WEBHOOK_EVENTS = 200
 
 
 def _reset_stats_if_new_day():
@@ -160,7 +198,7 @@ async def webhook_instantly(request: Request):
 
     logger.info(f"Instantly webhook: {event_type} | {email}")
 
-    # Store the event for sdr-reply-handler
+    # Store the event for sdr-reply-handler (file-backed, survives restarts)
     event = {
         "event_type": event_type,
         "email": email,
@@ -170,11 +208,12 @@ async def webhook_instantly(request: Request):
         "processed": False,
         "raw": body,
     }
-    _webhook_events.append(event)
-
-    # Trim to max size
-    while len(_webhook_events) > MAX_WEBHOOK_EVENTS:
-        _webhook_events.pop(0)
+    async with _webhook_lock:
+        _webhook_events.append(event)
+        # Trim to max size (drop oldest)
+        while len(_webhook_events) > MAX_WEBHOOK_EVENTS:
+            _webhook_events.pop(0)
+        _save_events_to_disk(_webhook_events)
 
     # Notify Teams for replies
     if event_type in ("reply", "reply_received", "responded"):
@@ -202,7 +241,8 @@ async def webhook_instantly_recent(
         unprocessed_only: if true, only return events not yet processed
         limit: max events to return
     """
-    events = _webhook_events.copy()
+    async with _webhook_lock:
+        events = _webhook_events.copy()
 
     if since:
         events = [e for e in events if e["timestamp"] > since]
@@ -222,11 +262,30 @@ async def webhook_mark_processed(request: Request):
     body = await request.json()
     timestamps = body.get("timestamps", [])
     count = 0
-    for event in _webhook_events:
-        if event["timestamp"] in timestamps:
-            event["processed"] = True
-            count += 1
+    async with _webhook_lock:
+        for event in _webhook_events:
+            if event["timestamp"] in timestamps:
+                event["processed"] = True
+                count += 1
+        if count:
+            _save_events_to_disk(_webhook_events)
     return {"marked": count}
+
+
+@app.get("/config/companies-house-key")
+async def config_companies_house_key():
+    """Return the Companies House API key from Secrets Manager.
+    Agents call this endpoint to get the key rather than needing it in env.
+    Secret path: cloudiqs/{STACK_NAME}/companies-house/api-key
+    """
+    from app.config import get_secret, is_dummy
+    key = get_secret("companies-house/api-key")
+    if is_dummy(key):
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Companies House API key not configured in Secrets Manager"},
+        )
+    return {"api_key": key}
 
 
 @app.get("/lead")
