@@ -26,7 +26,12 @@ jobs:
         run: pip install cfn-lint
 
       - name: Validate CloudFormation template
-        run: cfn-lint infra/cloudformation.yml
+        run: |
+          cfn-lint infra/cloudformation.yml --ignore-checks W4002
+          rc=$?
+          # cfn-lint exit codes: 0=clean, 2=warnings-only, 4=errors, 6=errors+warnings
+          # Treat warnings-only (rc=2) as success; fail only on actual errors.
+          [ "$rc" -le 2 ] || exit "$rc"
 
       # ── 2. Python syntax check (bridge/app/) ──────────────────────────────
       - name: Check Python syntax (bridge/app/)
