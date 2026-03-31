@@ -20,6 +20,11 @@
 # ────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
+# Windows: Git Bash doesn't inherit the system PATH where AWS CLI is installed
+if ! command -v aws >/dev/null 2>&1; then
+    export PATH="$PATH:/c/Program Files/Amazon/AWSCLIV2"
+fi
+
 STACK_NAME="${STACK_NAME:-cloudiqs-engine}"
 REGION="${AWS_REGION:-eu-west-1}"
 TEMPLATE="infra/cloudformation.yml"
