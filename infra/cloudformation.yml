@@ -1,9 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  CloudiQS Engine — EC2 instance, IAM role, security group, and S3 uploads bucket.
+  CloudiQS Engine — Full stack: VPC, EC2 instance, IAM role, security group, S3 uploads bucket.
   Deploy with: aws cloudformation deploy --template-file infra/cloudformation.yml
     --stack-name cloudiqs-engine --capabilities CAPABILITY_NAMED_IAM --region eu-west-1
-    --parameter-overrides InstanceType=t3.large KeyName=YOUR_KEY_PAIR
+    --parameter-overrides InstanceType=t3.large OpenClawInstallCmd="curl -fsSL https://install.openclaw.io | bash"
 
 Parameters:
   StackName:
@@ -29,16 +29,83 @@ Parameters:
     Default: CloudiQS/cloudiqs-agents
     Description: GitHub org/repo for OIDC trust policy (e.g. CloudiQS/cloudiqs-agents).
 
-  VpcId:
-    Type: AWS::EC2::VPC::Id
-    Description: VPC to deploy the instance into.
-
-  SubnetId:
-    Type: AWS::EC2::Subnet::Id
-    Description: Subnet for the EC2 instance (private subnet recommended).
+  OpenClawInstallCmd:
+    Type: String
+    Default: "echo 'OpenClaw install command not provided — install manually via SSM'"
+    Description: >
+      Full shell command to install OpenClaw on Ubuntu 22.04.
+      Example: curl -fsSL https://install.openclaw.io | bash
+      Override with the real command at deploy time.
 
 
 Resources:
+
+  # ── VPC ────────────────────────────────────────────────────────────────────
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${StackName}-vpc"
+        - Key: stack
+          Value: !Ref StackName
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${StackName}-igw"
+        - Key: stack
+          Value: !Ref StackName
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Public subnet — EC2 uses this with no inbound rules (all mgmt via SSM)
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${StackName}-public-subnet"
+        - Key: stack
+          Value: !Ref StackName
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${StackName}-public-rt"
+        - Key: stack
+          Value: !Ref StackName
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
 
   # ── S3 Uploads Bucket ──────────────────────────────────────────────────────
 
@@ -75,21 +142,18 @@ Resources:
               Service: ec2.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        # SSM Session Manager — for remote management without SSH
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
       Policies:
         - PolicyName: cloudiqs-engine-permissions
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              # Secrets Manager — read all secrets under stack prefix
               - Effect: Allow
                 Action:
                   - secretsmanager:GetSecretValue
                   - secretsmanager:DescribeSecret
                 Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:cloudiqs/${StackName}/*"
 
-              # S3 uploads bucket
               - Effect: Allow
                 Action:
                   - s3:GetObject
@@ -100,7 +164,6 @@ Resources:
                   - !GetAtt UploadsBucket.Arn
                   - !Sub "${UploadsBucket.Arn}/*"
 
-              # Bedrock — for architecture generation and AI models
               - Effect: Allow
                 Action:
                   - bedrock:InvokeModel
@@ -113,12 +176,10 @@ Resources:
                   - !Sub "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0"
                   - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/*"
 
-              # STS — assume cross-account role for Partner Central MCP
               - Effect: Allow
                 Action: sts:AssumeRole
                 Resource: "arn:aws:iam::349440382087:role/CloudiQS-PartnerCentral-MCP"
 
-              # CloudWatch Logs — for structured log export
               - Effect: Allow
                 Action:
                   - logs:CreateLogGroup
@@ -183,9 +244,7 @@ Resources:
       GroupDescription: >
         CloudiQS Engine EC2 instance. No inbound ports open.
         All management via SSM Session Manager. Bridge on localhost only.
-      VpcId: !Ref VpcId
-      # No ingress rules — all inbound blocked
-      # SSM Agent uses outbound HTTPS to AWS endpoints
+      VpcId: !Ref VPC
       SecurityGroupEgress:
         - IpProtocol: tcp
           FromPort: 443
@@ -211,7 +270,7 @@ Resources:
       InstanceType: !Ref InstanceType
       ImageId: !Ref AmiId
       IamInstanceProfile: !Ref InstanceProfile
-      SubnetId: !Ref SubnetId
+      SubnetId: !Ref PublicSubnet
       SecurityGroupIds:
         - !GetAtt SecurityGroup.GroupId
       BlockDeviceMappings:
@@ -236,7 +295,7 @@ Resources:
           apt-get upgrade -y
 
           # Install Docker
-          apt-get install -y ca-certificates curl gnupg lsb-release git
+          apt-get install -y ca-certificates curl gnupg lsb-release git python3 python3-pip
           install -m 0755 -d /etc/apt/keyrings
           curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
             | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
@@ -249,32 +308,20 @@ Resources:
           systemctl enable docker
           systemctl start docker
 
-          # Install AWS SSM Agent (usually pre-installed on Ubuntu 22.04 AMI)
+          # Install SSM Agent
           snap install amazon-ssm-agent --classic || true
           systemctl enable snap.amazon-ssm-agent.amazon-ssm-agent.service || true
           systemctl start snap.amazon-ssm-agent.amazon-ssm-agent.service || true
 
           # Install OpenClaw
-          # TODO: Replace with actual OpenClaw install command once provided
-          # Example: curl -fsSL https://install.openclaw.io | bash
-          echo "OPENCLAW_INSTALL_PLACEHOLDER — add install command here"
+          ${OpenClawInstallCmd}
 
           # Clone repo
           sudo -u ubuntu git clone https://github.com/CloudiQS/cloudiqs-agents.git \
             /home/ubuntu/cloudiqs-engine
 
-          # Configure git to use deploy key if present
-          if [ -f /home/ubuntu/.ssh/deploy_key ]; then
-            sudo -u ubuntu bash -c 'cat > ~/.ssh/config <<EOF
-          Host github.com
-            IdentityFile ~/.ssh/deploy_key
-            IdentitiesOnly yes
-          EOF'
-          fi
-
-          # Deploy bridge
-          sudo -u ubuntu STACK_NAME="${StackName}" AWS_REGION="${AWS::Region}" \
-            bash /home/ubuntu/cloudiqs-engine/deploy.sh
+          # Deploy bridge + agents
+          sudo -u ubuntu bash -c "cd /home/ubuntu/cloudiqs-engine && STACK_NAME=${StackName} AWS_REGION=${AWS::Region} bash deploy.sh"
 
           echo "=== Bootstrap complete ==="
       Tags:
@@ -304,3 +351,11 @@ Outputs:
   InstanceRoleName:
     Description: IAM role name attached to the instance
     Value: !Ref InstanceRole
+
+  VpcId:
+    Description: VPC ID
+    Value: !Ref VPC
+
+  PublicSubnetId:
+    Description: Public subnet ID
+    Value: !Ref PublicSubnet

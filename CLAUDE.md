@@ -14,11 +14,11 @@ Live instance: EC2 in eu-west-1. Bridge runs in Docker. Agents run in OpenClaw s
 
 ## Key directories
 
-- `bridge/app/` - FastAPI bridge (main.py, ace.py, hubspot.py, instantly.py, teams.py, mcp_client.py, config.py, campaign.py, models.py)
-- `agents/*/SOUL.md` - Agent instructions (46 agents, all complete)
+- `bridge/app/` - FastAPI bridge (main.py, ace.py, hubspot.py, instantly.py, teams.py, mcp_client.py, config.py, campaign.py, models.py, architect.py)
+- `agents/*/SOUL.md` - Agent instructions (47 agents, all complete)
 - `scripts/` - deploy helpers (register-cron-jobs.sh, s3-upload-poller.py, generate-souls.py, diagnostics.sh)
-- `docs/` - setup guides (SETUP.md, AWS-MCP-SETUP.md)
-- `context/` - CloudiQS GTM knowledge base (ICP, positioning, objections, case studies, pricing, competitors). Reference when writing SOUL.md files or reviewing outreach quality.
+- `docs/` - setup guides (SETUP.md, AWS-MCP-SETUP.md, PRE-DEPLOY.md)
+- `context/` - CloudiQS GTM knowledge base (ICP, positioning, objections, case studies, pricing, competitors, sow-structure, sow-architectures). Reference when writing SOUL.md files or reviewing outreach quality.
 - `.claude/agents/` - Subagents: engine-ops (health checks), agent-builder (new SDR agents), pipeline-reviewer (pre-push checks)
 - `.claude/commands/` - Slash commands: /health-check, /new-agent, /pre-deploy
 - `.github/workflows/deploy.yml` - GitHub Actions CI/CD via SSM
@@ -85,6 +85,8 @@ python3 scripts/generate-souls.py
 - @README.md - full architecture, agent roster, known issues
 - @docs/SETUP.md - GitHub + AWS setup with IAM commands
 - @docs/AWS-MCP-SETUP.md - MCP IAM policy, test commands, agent usage
+- @docs/PRE-DEPLOY.md - pre-deploy checklist before pushing to EC2
+- `infra/secrets-init.sh` - populate Secrets Manager on first deploy
 - AWS Partner Central API: https://docs.aws.amazon.com/partner-central/latest/APIReference/
 - AWS MCP Server: https://docs.aws.amazon.com/partner-central/latest/APIReference/partner-central-mcp-server.html
 

@@ -37,9 +37,9 @@ EC2 Instance (eu-west-1, account 736956442878)
     +-- Microsoft Teams (notifications)
 ```
 
-## Agent Roster (46 agents)
+## Agent Roster (47 agents)
 
-### SDR Agents (18) - Lead generation and outreach
+### SDR Agents (19) - Lead generation and outreach
 | Agent | Schedule | Model | Purpose |
 |-------|----------|-------|---------|
 | sdr-vmware | 07:00 + 13:00 | Nova Lite | VMware/Broadcom exit leads |
@@ -60,6 +60,7 @@ EC2 Instance (eu-west-1, account 736956442878)
 | sdr-signal-tracker | 06:00 | Nova Lite | Monitor intent signals |
 | sdr-linkedin | 11:00 | Haiku | LinkedIn warm follow-up |
 | sdr-caller | Manual | Sonnet | Warm outbound calls |
+| sdr-digest | 10:30 Mon-Fri | Nova Lite | Daily SDR activity digest to Teams |
 
 ### ACE Agents (6) - AWS Partner Central
 | Agent | Schedule | Model | Purpose |
