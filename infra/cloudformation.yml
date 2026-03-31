@@ -13,11 +13,11 @@ Parameters:
 
   InstanceType:
     Type: String
-    Default: t3.large
-    AllowedValues: [t3.medium, t3.large, t3.xlarge, m6i.large, m6i.xlarge]
+    Default: t3.medium
+    AllowedValues: [t3.medium, t3.large, t3.xlarge]
     Description: >
-      t3.large (2 vCPU, 8GB) is the minimum for 46 agents + Docker bridge.
-      Use t3.xlarge or m6i.large for production.
+      t3.medium (2 vCPU, 4GB) for dev/staging. t3.large (2 vCPU, 8GB) recommended
+      for 47 agents + Docker bridge. t3.xlarge for heavy load.
 
   AmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
@@ -36,6 +36,13 @@ Parameters:
       Full shell command to install OpenClaw on Ubuntu 22.04.
       Example: curl -fsSL https://install.openclaw.io | bash
       Override with the real command at deploy time.
+
+  DeployToken:
+    Type: String
+    NoEcho: true
+    Description: >
+      GitHub Personal Access Token (or fine-grained token) with read access to the repo.
+      Used for HTTPS clone during bootstrap. Generate at GitHub Settings > Developer settings > Tokens.
 
 
 Resources:
@@ -199,9 +206,24 @@ Resources:
       Roles:
         - !Ref InstanceRole
 
+  # ── IAM: GitHub OIDC Provider ─────────────────────────────────────────────
+
+  GitHubOIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+      Tags:
+        - Key: stack
+          Value: !Ref StackName
+
   # ── IAM: GitHub Actions Deploy Role ───────────────────────────────────────
 
   GitHubDeployRole:
+    DependsOn: GitHubOIDCProvider
     Type: AWS::IAM::Role
     Properties:
       RoleName: github-deploy
@@ -317,11 +339,12 @@ Resources:
           ${OpenClawInstallCmd}
 
           # Clone repo
-          sudo -u ubuntu git clone https://github.com/CloudiQS/cloudiqs-agents.git \
+          sudo -u ubuntu git clone https://x-access-token:${DeployToken}@github.com/${GithubOrgRepo}.git \
             /home/ubuntu/cloudiqs-engine
 
           # Deploy bridge + agents
           sudo -u ubuntu bash -c "cd /home/ubuntu/cloudiqs-engine && STACK_NAME=${StackName} AWS_REGION=${AWS::Region} bash deploy.sh"
+          # NOTE - bridge will start with DUMMY secrets. Run infra/secrets-init.sh via SSM after stack creation to populate real secrets.
 
           echo "=== Bootstrap complete ==="
       Tags:
@@ -329,6 +352,25 @@ Resources:
           Value: !Sub "${StackName}-instance"
         - Key: stack
           Value: !Ref StackName
+
+  # ── Elastic IP ────────────────────────────────────────────────────────────
+  # Stable public IP for DNS records and Instantly/HubSpot webhook allowlists.
+
+  ElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${StackName}-eip"
+        - Key: stack
+          Value: !Ref StackName
+
+  ElasticIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref Instance
+      EIP: !Ref ElasticIP
 
 
 Outputs:
@@ -359,3 +401,7 @@ Outputs:
   PublicSubnetId:
     Description: Public subnet ID
     Value: !Ref PublicSubnet
+
+  ElasticIPAddress:
+    Description: Stable public IP — use this for DNS records and webhook allowlists
+    Value: !Ref ElasticIP
