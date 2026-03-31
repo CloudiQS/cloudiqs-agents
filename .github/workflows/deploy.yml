@@ -1,0 +1,96 @@
+name: Deploy CloudiQS Engine
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      stack_name:
+        description: 'Stack name (e.g. cloudiqs-engine, cloudiqs-staging)'
+        required: false
+        default: 'cloudiqs-engine'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: eu-west-1
+  INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+  STACK_NAME: ${{ github.event.inputs.stack_name || 'cloudiqs-engine' }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy via SSM
+        id: deploy
+        run: |
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "${{ env.INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --timeout-seconds 600 \
+            --parameters commands='[
+              "export STACK_NAME=${{ env.STACK_NAME }} AWS_REGION=${{ env.AWS_REGION }}",
+              "cd /home/ubuntu/cloudiqs-engine && sudo -u ubuntu git fetch origin main && sudo -u ubuntu git reset --hard origin/main",
+              "sudo -u ubuntu STACK_NAME=${{ env.STACK_NAME }} AWS_REGION=${{ env.AWS_REGION }} bash /home/ubuntu/cloudiqs-engine/deploy.sh 2>&1 | tail -50"
+            ]' \
+            --query 'Command.CommandId' \
+            --output text)
+          
+          echo "command_id=$COMMAND_ID" >> $GITHUB_OUTPUT
+          echo "SSM Command: $COMMAND_ID"
+          
+          # Poll for completion (aws ssm wait is unreliable)
+          for i in $(seq 1 60); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "${{ env.INSTANCE_ID }}" \
+              --query 'StatusDetails' \
+              --output text 2>/dev/null || echo "Pending")
+            
+            if [ "$STATUS" = "Success" ]; then
+              echo "Deploy succeeded"
+              break
+            elif [ "$STATUS" = "Failed" ] || [ "$STATUS" = "TimedOut" ]; then
+              echo "Deploy failed: $STATUS"
+              # Get error output
+              aws ssm get-command-invocation \
+                --command-id "$COMMAND_ID" \
+                --instance-id "${{ env.INSTANCE_ID }}" \
+                --query 'StandardErrorContent' \
+                --output text 2>/dev/null | tail -20
+              exit 1
+            fi
+            
+            sleep 10
+          done
+
+      - name: Verify deployment
+        if: success()
+        run: |
+          # Run diagnostics via SSM
+          DIAG_ID=$(aws ssm send-command \
+            --instance-ids "${{ env.INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --timeout-seconds 60 \
+            --parameters commands='["bash /home/ubuntu/cloudiqs-engine/scripts/diagnostics.sh"]' \
+            --query 'Command.CommandId' \
+            --output text)
+          
+          sleep 15
+          
+          aws ssm get-command-invocation \
+            --command-id "$DIAG_ID" \
+            --instance-id "${{ env.INSTANCE_ID }}" \
+            --query 'StandardOutputContent' \
+            --output text 2>/dev/null | head -30

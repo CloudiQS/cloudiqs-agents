@@ -1,0 +1,16 @@
+services:
+  bridge:
+    build: .
+    image: ${STACK_NAME:-cloudiqs-engine}-bridge:latest
+    container_name: ${BRIDGE_CONTAINER:-cloudiqs-bridge}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      - AWS_DEFAULT_REGION=${AWS_REGION:-eu-west-1}
+      - STACK_NAME=${STACK_NAME:-cloudiqs-engine}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8787/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
