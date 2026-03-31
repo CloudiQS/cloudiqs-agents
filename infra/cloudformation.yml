@@ -178,9 +178,9 @@ Resources:
                   - bedrock:Converse
                   - bedrock:ConverseStream
                 Resource:
-                  - !Sub "arn:aws:bedrock:us-east-1::foundation-model/us.anthropic.claude-sonnet-4-6-20251101"
-                  - !Sub "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0"
-                  - !Sub "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0"
+                  - "arn:aws:bedrock:us-east-1::foundation-model/us.anthropic.claude-sonnet-4-6-20251101"
+                  - "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0"
+                  - "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0"
                   - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/*"
 
               - Effect: Allow

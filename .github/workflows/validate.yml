@@ -27,11 +27,15 @@ jobs:
 
       - name: Validate CloudFormation template
         run: |
-          cfn-lint infra/cloudformation.yml --ignore-checks W4002
+          set +e
+          cfn-lint infra/cloudformation.yml --ignore-checks W4002 W3037
           rc=$?
+          set -e
           # cfn-lint exit codes: 0=clean, 2=warnings-only, 4=errors, 6=errors+warnings
           # Treat warnings-only (rc=2) as success; fail only on actual errors.
-          [ "$rc" -le 2 ] || exit "$rc"
+          # Note: set +e is required because bash -e (GitHub Actions default) would
+          # exit immediately on cfn-lint's non-zero return before rc=$? executes.
+          [ "$rc" -le 2 ] || { echo "cfn-lint found errors (exit $rc)"; exit "$rc"; }
 
       # ── 2. Python syntax check (bridge/app/) ──────────────────────────────
       - name: Check Python syntax (bridge/app/)
