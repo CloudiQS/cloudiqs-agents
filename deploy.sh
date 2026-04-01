@@ -13,6 +13,9 @@ REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 OPENCLAW_DIR="$HOME/.openclaw"
 BRIDGE_DIR="$HOME/bridge"
 
+# Add snap binaries to PATH so AWS CLI (installed as snap) is always found
+export PATH="/snap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+
 # Stack name drives ALL resource naming
 # Set via: STACK_NAME=cloudiqs-engine bash deploy.sh
 # Or via environment variable in GitHub Actions
@@ -135,12 +138,12 @@ chmod +x "$HOME/s3-upload-poller.py" "$HOME/cv-poller.sh" 2>/dev/null || true
 # Install poller crons (idempotent, with stack name in environment)
 EXISTING_CRON=$(crontab -l 2>/dev/null || true)
 if ! echo "$EXISTING_CRON" | grep -q "s3-upload-poller"; then
-    (echo "$EXISTING_CRON"; echo "*/5 * * * * STACK_NAME=$STACK_NAME AWS_REGION=$AWS_REGION python3 $HOME/s3-upload-poller.py >> /tmp/s3-poller.log 2>&1") | crontab -
+    (echo "$EXISTING_CRON"; echo "*/5 * * * * PATH=/snap/bin:/usr/local/bin:/usr/bin:/bin STACK_NAME=$STACK_NAME AWS_REGION=$AWS_REGION python3 $HOME/s3-upload-poller.py >> /tmp/s3-poller.log 2>&1") | crontab -
     echo -e "  ${GREEN}S3 poller cron installed (bucket: $S3_BUCKET)${NC}"
 else
     # Update existing cron with current stack name
     EXISTING_CRON=$(echo "$EXISTING_CRON" | grep -v "s3-upload-poller")
-    (echo "$EXISTING_CRON"; echo "*/5 * * * * STACK_NAME=$STACK_NAME AWS_REGION=$AWS_REGION python3 $HOME/s3-upload-poller.py >> /tmp/s3-poller.log 2>&1") | crontab -
+    (echo "$EXISTING_CRON"; echo "*/5 * * * * PATH=/snap/bin:/usr/local/bin:/usr/bin:/bin STACK_NAME=$STACK_NAME AWS_REGION=$AWS_REGION python3 $HOME/s3-upload-poller.py >> /tmp/s3-poller.log 2>&1") | crontab -
     echo -e "  ${GREEN}S3 poller cron updated (bucket: $S3_BUCKET)${NC}"
 fi
 
