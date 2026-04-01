@@ -579,7 +579,7 @@ async def ensure_properties() -> None:
                     if r.status_code == 201:
                         logger.info(
                             "hubspot_property_created",
-                            extra={"object": obj_type, "name": prop["name"]},
+                            extra={"object": obj_type, "prop_name": prop["name"]},
                         )
                     elif r.status_code == 409:
                         # Already exists — this is the happy path after first deploy
@@ -589,7 +589,7 @@ async def ensure_properties() -> None:
                             "hubspot_property_unexpected_response",
                             extra={
                                 "object": obj_type,
-                                "name": prop["name"],
+                                "prop_name": prop["name"],
                                 "status": r.status_code,
                                 "body": r.text[:200],
                             },
@@ -597,5 +597,5 @@ async def ensure_properties() -> None:
                 except Exception as e:
                     logger.warning(
                         "hubspot_property_create_failed",
-                        extra={"object": obj_type, "name": prop["name"], "error": str(e)},
+                        extra={"object": obj_type, "prop_name": prop["name"], "error": str(e)},
                     )
