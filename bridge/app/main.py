@@ -491,8 +491,40 @@ async def ace_update(request: Request):
     }
 
 
+def _extract_mcp_text(result) -> str:
+    """Extract plain text from an MCP send_message response.
+
+    mcp_client.send_message returns a dict built from the JSON-RPC result.
+    The text is already concatenated into result["text"] by mcp_client.py.
+    However if the raw structure comes through, also handle:
+      result["content"] -> list of blocks where block["type"] == "text"
+    Falls back gracefully to empty string on any parse error.
+    """
+    if result is None or isinstance(result, Exception):
+        return ""
+    # Primary path — mcp_client already concatenates text blocks into "text"
+    text = result.get("text", "")
+    if text:
+        return text.strip()
+    # Fallback — walk content array if present
+    for block in result.get("content", []):
+        # Handle nested: block may be {"type": "text", "text": "..."}
+        # or {"type": "ASSISTANT_RESPONSE", "content": {"text": "..."}}
+        if block.get("type") == "text":
+            text += block.get("text", "")
+        elif block.get("type") == "ASSISTANT_RESPONSE":
+            inner = block.get("content", {})
+            if isinstance(inner, dict):
+                text += inner.get("text", "")
+            elif isinstance(inner, list):
+                for chunk in inner:
+                    if isinstance(chunk, dict) and chunk.get("type") == "text":
+                        text += chunk.get("text", "")
+    return text.strip() or "No data returned."
+
+
 async def _run_ace_hygiene() -> dict:
-    """Run all ACE hygiene MCP queries and return structured results.
+    """Run 3 ACE hygiene MCP queries concurrently and return parsed text results.
     Shared by POST /ace/hygiene and GET /ace/hygiene.
     """
     from app import mcp_client
@@ -511,13 +543,8 @@ async def _run_ace_hygiene() -> dict:
             "for funding programs such as MAP, POC credits, or CEI? "
             "Show opportunity ID, company name, program name, and estimated amount."
         ),
-        "inbound_invitations": (
-            "Do I have any pending engagement invitations from AWS? "
-            "List each with invitation ID, company name, and invitation date."
-        ),
     }
 
-    # Run all 4 MCP queries concurrently
     results = await asyncio.gather(
         *[mcp_client.send_message(q, catalog="AWS") for q in queries.values()],
         return_exceptions=True,
@@ -526,35 +553,37 @@ async def _run_ace_hygiene() -> dict:
     report = {}
     for key, result in zip(queries.keys(), results):
         if isinstance(result, Exception) or result is None:
-            report[key] = {"text": "MCP query failed — check Partner Central connection.", "error": True}
+            logger.warning(f"ace_hygiene_mcp_failed", extra={"section": key})
+            report[key] = "⚠️ MCP query failed — check Partner Central connection."
         else:
-            report[key] = {"text": result.get("text", "No response"), "error": False}
+            report[key] = _extract_mcp_text(result) or "No data returned."
 
     return report
 
 
 async def _post_hygiene_to_teams(report: dict) -> None:
-    """Format hygiene report as a Teams MessageCard and post it."""
+    """Post formatted ACE hygiene report as a Teams MessageCard."""
     today = datetime.now().strftime("%d %b %Y")
-
-    def _section(title: str, key: str) -> dict:
-        text = report[key]["text"] if not report[key]["error"] else "⚠️ Query failed"
-        return {
-            "activityTitle": title,
-            "activityText": text,
-        }
 
     card = {
         "@type": "MessageCard",
         "@context": "https://schema.org/extensions",
         "themeColor": "0078D4",
         "summary": f"ACE Hygiene Report {today}",
-        "title": f"🔍 ACE HYGIENE REPORT — {today}",
+        "title": f"ACE HYGIENE REPORT — {today}",
         "sections": [
-            _section("⚠️ ACTION REQUIRED", "action_required"),
-            _section("⏰ STALE LAUNCHED (30+ days)", "stale_launched"),
-            _section("💰 FUNDING ELIGIBLE", "funding_eligible"),
-            _section("📥 INBOUND AWS LEADS", "inbound_invitations"),
+            {
+                "activityTitle": "⚠️ ACTION REQUIRED",
+                "activityText": report.get("action_required", "None"),
+            },
+            {
+                "activityTitle": "⏰ STALE LAUNCHED (30+ days no update)",
+                "activityText": report.get("stale_launched", "None"),
+            },
+            {
+                "activityTitle": "💰 FUNDING ELIGIBLE",
+                "activityText": report.get("funding_eligible", "None"),
+            },
         ],
     }
     await teams._post(card)
@@ -564,14 +593,13 @@ async def _post_hygiene_to_teams(report: dict) -> None:
 async def ace_hygiene_post():
     """Run ACE pipeline hygiene check via Partner Central MCP.
 
-    Queries:
+    Queries (run concurrently):
       1. Opportunities with Action Required status
       2. Stale Launched opportunities (30+ days no update)
-      3. Funding eligible opportunities (Business Validation / Committed)
-      4. Pending inbound engagement invitations from AWS
+      3. Funding eligible at Business Validation / Committed stage
 
-    Posts a formatted summary card to Teams webhook and returns the
-    raw MCP responses as JSON.
+    Parses MCP text responses, posts a formatted MessageCard to Teams,
+    and returns the plain-text sections in the API response.
 
     Called by ace-hygiene agent on its Monday 06:00 schedule.
     """
@@ -582,7 +610,9 @@ async def ace_hygiene_post():
     return {
         "status": "complete",
         "date": datetime.now().strftime("%Y-%m-%d"),
-        "sections": {k: v["text"][:500] for k, v in report.items()},
+        "action_required": report.get("action_required", ""),
+        "stale_launched": report.get("stale_launched", ""),
+        "funding_eligible": report.get("funding_eligible", ""),
     }
 
 
