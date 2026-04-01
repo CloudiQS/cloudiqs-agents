@@ -38,7 +38,7 @@ from pythonjsonlogger import jsonlogger
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.models import LeadPayload, IngestPayload, WebhookPayload
-from app import hubspot, instantly, ace, teams
+from app import hubspot, instantly, ace, teams, ace_notifications
 
 
 # ── Logging (structured JSON for CloudWatch) ─────────────────────────────────
@@ -458,10 +458,7 @@ async def ace_create(lead: LeadPayload):
     opp_id = await ace.create_opportunity(lead)
 
     if opp_id:
-        await teams.notify(
-            f"**ACE Opportunity Created** | {lead.company}\n"
-            f"Opportunity: {opp_id} | Campaign: {lead.campaign}"
-        )
+        await ace_notifications.notify_created(opp_id, lead)
 
     return {"status": "created" if opp_id else "failed", "ace_opportunity_id": opp_id}
 
@@ -609,7 +606,7 @@ async def ace_hygiene_post():
     """
     logger.info("ace_hygiene_started")
     report = await _run_ace_hygiene()
-    await _post_hygiene_to_teams(report)
+    await ace_notifications.notify_hygiene(report)
     logger.info("ace_hygiene_complete")
     return {
         "status": "complete",
@@ -628,7 +625,11 @@ async def ace_hygiene_get():
 
 @app.post("/ace/update-stage")
 async def ace_update_stage(request: Request):
-    """Update ACE opportunity stage. Called by ace-sync agent."""
+    """Update ACE opportunity stage. Called by ace-sync agent.
+
+    Required body fields: ace_opportunity_id, stage
+    Optional body fields: company, old_stage (used for richer Teams notification)
+    """
     body = await request.json()
     opp_id = body.get("ace_opportunity_id")
     stage = body.get("stage")
@@ -640,6 +641,12 @@ async def ace_update_stage(request: Request):
         )
 
     success = await ace.update_opportunity_stage(opp_id, stage)
+
+    if success:
+        company = body.get("company", opp_id)
+        old_stage = body.get("old_stage", "")
+        await ace_notifications.notify_stage_change(opp_id, company, stage, old_stage)
+
     return {
         "status": "updated" if success else "failed",
         "ace_opportunity_id": opp_id,
@@ -889,6 +896,7 @@ async def ceo_briefing_post():
     logger.info("ceo_briefing_started")
     data = await _ceo.run_briefing(stats=_stats)
     await _ceo.post_briefing_to_teams(data)
+    await ace_notifications.notify_briefing_alerts(data)
     logger.info("ceo_briefing_complete", extra={"date": data.get("date")})
     return {
         "status": "complete",
