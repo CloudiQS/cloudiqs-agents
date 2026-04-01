@@ -217,9 +217,13 @@ class AuthRateLimitMiddleware(BaseHTTPMiddleware):
         if path in _AUTH_EXEMPT_PATHS:
             return await call_next(request)
 
-        # Trust loopback — agents run on the same host, no inbound ports open
+        # Trust loopback and Docker bridge network — agents run on the same host,
+        # no inbound ports open. Bridge runs in Docker so host requests arrive
+        # via Docker bridge (172.x.x.x) not 127.0.0.1.
         client_host = request.client.host if request.client else ""
-        if client_host in ("127.0.0.1", "::1", "localhost"):
+        if client_host in ("127.0.0.1", "::1", "localhost") or (
+            client_host and client_host.startswith("172.")
+        ):
             return await call_next(request)
 
         # Auth check for external requests
