@@ -204,7 +204,10 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
 class AuthRateLimitMiddleware(BaseHTTPMiddleware):
     """
     1. Checks X-API-Key header (skips /health and docs paths).
-    2. Applies per-key rate limits by endpoint prefix.
+    2. Skips auth for requests from localhost/127.0.0.1 — agents run on
+       the same instance and the security group blocks all inbound traffic,
+       so loopback requests are trusted without a key.
+    3. Applies per-key rate limits by endpoint prefix.
     """
 
     async def dispatch(self, request: Request, call_next):
@@ -214,7 +217,12 @@ class AuthRateLimitMiddleware(BaseHTTPMiddleware):
         if path in _AUTH_EXEMPT_PATHS:
             return await call_next(request)
 
-        # Auth check
+        # Trust loopback — agents run on the same host, no inbound ports open
+        client_host = request.client.host if request.client else ""
+        if client_host in ("127.0.0.1", "::1", "localhost"):
+            return await call_next(request)
+
+        # Auth check for external requests
         if _BRIDGE_AUTH_ENABLED:
             api_key = request.headers.get("X-API-Key", "")
             if not api_key or api_key != _BRIDGE_API_KEY:
