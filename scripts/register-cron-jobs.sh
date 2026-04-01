@@ -20,7 +20,7 @@ echo -e "${YELLOW}[0/3] Preflight: verifying openclaw cron add flag syntax...${N
 # If openclaw uses different names (e.g. --cron instead of --schedule), abort early.
 HELP_OUTPUT=$(openclaw cron add --help 2>&1 || true)
 MISSING_FLAGS=""
-for FLAG in --name --schedule --tz --agent --model --message --timeout; do
+for FLAG in --name --cron --tz --agent --model --message --timeout-seconds; do
     if ! echo "$HELP_OUTPUT" | grep -qF -- "$FLAG"; then
         MISSING_FLAGS="$MISSING_FLAGS $FLAG"
     fi
@@ -81,11 +81,11 @@ add_job() {
 
     if openclaw cron add \
         --name "$NAME" \
-        --schedule "$SCHEDULE" \
+        --cron "$SCHEDULE" \
         --tz "$TZ" \
         --agent "$AGENT" \
         --model "$MODEL" \
-        --timeout "$TIMEOUT" \
+        --timeout-seconds "$TIMEOUT" \
         --message "$MESSAGE" 2>/dev/null; then
         echo -e "  ${GREEN}+${NC} $NAME"
         REGISTERED=$((REGISTERED + 1))

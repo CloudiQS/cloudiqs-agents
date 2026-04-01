@@ -110,7 +110,7 @@ export STACK_NAME BRIDGE_CONTAINER AWS_REGION
 sudo -E docker compose down 2>/dev/null || true
 sudo -E docker compose build --no-cache
 sudo -E docker compose up -d
-sleep 5
+sleep 10
 BRIDGE_HEALTH=$(curl -s http://localhost:8787/health 2>/dev/null || echo "FAILED")
 if echo "$BRIDGE_HEALTH" | grep -q "ok"; then
     echo -e "  ${GREEN}Bridge healthy${NC}"
