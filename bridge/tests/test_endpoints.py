@@ -268,3 +268,52 @@ def test_check_lead_no_email(client, auth):
     r = client.get("/lead", headers=auth)
     assert r.status_code == 200
     assert r.json()["exists"] is False
+
+
+# ── /ceo/briefing endpoint ────────────────────────────────────────────────────
+
+@patch("app.ceo_briefing.post_briefing_to_teams", new_callable=AsyncMock, return_value=True)
+@patch(
+    "app.ceo_briefing.run_aws_stage_alignment",
+    new_callable=AsyncMock,
+    return_value={
+        "text": "10 Launched: 8 AWS Launched, 1 Closed Lost, 1 empty",
+        "total": 10,
+        "aws_launched": 8,
+        "closed_lost": 1,
+        "empty": 1,
+        "alignment_rate": 0.8,
+        "colour": "GREEN",
+    },
+)
+def test_ceo_briefing_post_returns_complete(mock_align, mock_post, client, auth):
+    r = client.post("/ceo/briefing", headers=auth)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["status"] == "complete"
+    assert data["aws_stage_alignment"]["colour"] == "GREEN"
+    assert data["aws_stage_alignment"]["total_launched"] == 10
+    assert data["aws_stage_alignment"]["aws_confirmed"] == 8
+    mock_align.assert_called_once()
+    mock_post.assert_called_once()
+
+
+@patch("app.ceo_briefing.post_briefing_to_teams", new_callable=AsyncMock, return_value=True)
+@patch(
+    "app.ceo_briefing.run_aws_stage_alignment",
+    new_callable=AsyncMock,
+    return_value={
+        "text": "MCP query failed",
+        "total": None,
+        "aws_launched": None,
+        "closed_lost": None,
+        "empty": None,
+        "alignment_rate": None,
+        "colour": "UNKNOWN",
+    },
+)
+def test_ceo_briefing_get_returns_complete(mock_align, mock_post, client, auth):
+    r = client.get("/ceo/briefing", headers=auth)
+    assert r.status_code == 200
+    assert r.json()["status"] == "complete"
+    assert r.json()["aws_stage_alignment"]["colour"] == "UNKNOWN"
