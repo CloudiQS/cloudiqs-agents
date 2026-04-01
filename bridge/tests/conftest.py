@@ -2,6 +2,7 @@
 Shared test fixtures for CloudiQS Bridge tests.
 """
 import pytest
+from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 
 TEST_API_KEY = "test-key-cloudiqs-12345"
@@ -15,10 +16,14 @@ def patch_auth(monkeypatch):
     the FastAPI lifespan runs inside TestClient it receives TEST_API_KEY rather
     than a randomly-generated fallback key.  Directly patching the module-level
     variable would be overwritten by lifespan's global reassignment.
+
+    Also mocks hubspot.ensure_properties so the lifespan never makes real
+    HubSpot API calls during the test suite.
     """
     import app.main as main_module
     monkeypatch.setattr(main_module, "_BRIDGE_AUTH_ENABLED", True)
     monkeypatch.setattr(main_module, "_load_bridge_api_key", lambda: TEST_API_KEY)
+    monkeypatch.setattr("app.hubspot.ensure_properties", AsyncMock(return_value=None))
 
 
 @pytest.fixture

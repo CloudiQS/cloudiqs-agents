@@ -48,7 +48,7 @@ def _configure_logging() -> None:
     formatter = jsonlogger.JsonFormatter(
         fmt="%(asctime)s %(levelname)s %(name)s %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%SZ",
-        rename_fields={"asctime": "timestamp", "levelname": "level", "name": "logger"},
+        rename_fields={"asctime": "timestamp", "levelname": "level"},
     )
     handler.setFormatter(formatter)
     root = logging.getLogger()
