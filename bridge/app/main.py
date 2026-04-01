@@ -321,7 +321,7 @@ async def create_lead(lead: LeadPayload):
         instantly_id = await instantly.enrol(lead)
         result["instantly_lead_id"] = instantly_id
 
-    await teams.notify_lead({**lead.dict(), **result})
+    await teams.notify_lead({**lead.model_dump(), **result})
 
     _stats["total_leads"] += 1
     camp = lead.campaign or "unknown"
