@@ -9,10 +9,16 @@ TEST_API_KEY = "test-key-cloudiqs-12345"
 
 @pytest.fixture(autouse=True)
 def patch_auth(monkeypatch):
-    """Patch bridge API key and enable auth for all tests."""
+    """Patch bridge API key loading and enable auth for all tests.
+
+    Patches _load_bridge_api_key (not _BRIDGE_API_KEY directly) so that when
+    the FastAPI lifespan runs inside TestClient it receives TEST_API_KEY rather
+    than a randomly-generated fallback key.  Directly patching the module-level
+    variable would be overwritten by lifespan's global reassignment.
+    """
     import app.main as main_module
-    monkeypatch.setattr(main_module, "_BRIDGE_API_KEY", TEST_API_KEY)
     monkeypatch.setattr(main_module, "_BRIDGE_AUTH_ENABLED", True)
+    monkeypatch.setattr(main_module, "_load_bridge_api_key", lambda: TEST_API_KEY)
 
 
 @pytest.fixture

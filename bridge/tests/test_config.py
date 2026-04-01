@@ -56,6 +56,7 @@ def test_get_secret_caches_result():
 
 def test_get_secret_falls_back_to_env(monkeypatch):
     """If Secrets Manager fails, get_secret should check environment variables."""
+    from app.config import get_secret
     import app.config as cfg
 
     with patch("app.config._get_client") as mock_client:
