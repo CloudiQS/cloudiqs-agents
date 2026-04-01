@@ -462,6 +462,31 @@ async def ace_create(lead: LeadPayload):
     return {"status": "created" if opp_id else "failed", "ace_opportunity_id": opp_id}
 
 
+@app.post("/ace/update")
+async def ace_update(request: Request):
+    """Update free-form fields on an existing ACE opportunity.
+
+    Body:
+        ace_opportunity_id: ACE opportunity ID (e.g. "O14608392")
+        customer_business_problem: str (20-2000 chars)
+        website: str (e.g. "shadagro.com")
+
+    Used by agents and manually to fix/enrich existing opportunities.
+    """
+    body = await request.json()
+    opp_id = body.get("ace_opportunity_id", "")
+    if not opp_id:
+        return JSONResponse(status_code=400, content={"error": "ace_opportunity_id required"})
+
+    fields = {k: v for k, v in body.items() if k != "ace_opportunity_id" and v}
+    success = await ace.update_opportunity_fields(opp_id, fields)
+    return {
+        "status": "updated" if success else "failed",
+        "ace_opportunity_id": opp_id,
+        "fields": list(fields.keys()),
+    }
+
+
 @app.post("/ace/update-stage")
 async def ace_update_stage(request: Request):
     """Update ACE opportunity stage. Called by ace-sync agent."""

@@ -562,3 +562,64 @@ async def update_opportunity_stage(opp_id: str, stage: str) -> bool:
     except Exception as e:
         logger.error(f"ACE stage update unexpected error for {opp_id}: {e}")
         return False
+
+
+# ══════════════════════════════════════════════════════════════════════
+# UPDATE OPPORTUNITY FIELDS
+# ══════════════════════════════════════════════════════════════════════
+
+async def update_opportunity_fields(opp_id: str, fields: dict) -> bool:
+    """Update free-form fields on an existing ACE opportunity.
+
+    Supported fields (all optional):
+        customer_business_problem (str) — CustomerBusinessProblem, 20-2000 chars
+        website (str)                   — Customer.Account.WebsiteUrl
+
+    Args:
+        opp_id: ACE opportunity ID (e.g. "O14608392")
+        fields: dict of field names to new values
+
+    Returns:
+        True if update succeeded, False otherwise.
+    """
+    pc = _get_partner_central_client()
+    if pc is None:
+        return False
+
+    catalog = get_secret("partner-central/catalog") or "AWS"
+    update_params: dict = {"Catalog": catalog, "Identifier": opp_id}
+
+    customer_business_problem = fields.get("customer_business_problem", "")
+    website = fields.get("website", "")
+
+    if customer_business_problem:
+        # API requires 20-2000 characters
+        if len(customer_business_problem) < 20:
+            customer_business_problem = customer_business_problem.ljust(20)
+        update_params["Project"] = {
+            "CustomerBusinessProblem": customer_business_problem[:2000]
+        }
+
+    if website:
+        update_params["Customer"] = {
+            "Account": {"WebsiteUrl": website}
+        }
+
+    if len(update_params) <= 2:
+        logger.warning(f"ACE update: no recognised fields provided for {opp_id}")
+        return False
+
+    try:
+        pc.update_opportunity(**update_params)
+        logger.info(f"ACE fields updated: {opp_id} -> {list(fields.keys())}")
+        return True
+
+    except ClientError as e:
+        error_code = e.response.get("Error", {}).get("Code", "Unknown")
+        error_msg = e.response.get("Error", {}).get("Message", "No message")
+        logger.error(f"ACE field update failed for {opp_id}: [{error_code}] {error_msg}")
+        return False
+
+    except Exception as e:
+        logger.error(f"ACE field update unexpected error for {opp_id}: {e}")
+        return False
