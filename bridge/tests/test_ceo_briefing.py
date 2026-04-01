@@ -1,174 +1,199 @@
-"""Unit tests for app.ceo_briefing — colour logic, count parsing, Teams card."""
+"""Unit tests for app.ceo_briefing — response parsing, briefing runner, Teams card."""
+import json
 from unittest.mock import AsyncMock, patch
-
-from app.ceo_briefing import _colour, _theme_colour, _try_parse_counts
-
-
-# ── _colour ───────────────────────────────────────────────────────────────────
-
-def test_colour_green_at_threshold():
-    assert _colour(0.80) == "GREEN"
-
-
-def test_colour_green_above_threshold():
-    assert _colour(1.0) == "GREEN"
-
-
-def test_colour_amber_between_thresholds():
-    assert _colour(0.70) == "AMBER"
-
-
-def test_colour_red_below_amber():
-    assert _colour(0.50) == "RED"
-
-
-def test_colour_none_returns_unknown():
-    assert _colour(None) == "UNKNOWN"
-
-
-# ── _theme_colour ─────────────────────────────────────────────────────────────
-
-def test_theme_green():
-    assert _theme_colour("GREEN") == "00B050"
-
-
-def test_theme_amber():
-    assert _theme_colour("AMBER") == "FFC000"
-
-
-def test_theme_red():
-    assert _theme_colour("RED") == "C00000"
-
-
-def test_theme_unknown_fallback():
-    assert _theme_colour("UNKNOWN") == "888888"
-
-
-# ── _try_parse_counts ─────────────────────────────────────────────────────────
-
-def test_parse_counts_extracts_total_launched():
-    text = "You have 12 total launched opportunities."
-    counts = _try_parse_counts(text)
-    assert counts["total"] == 12
-
-
-def test_parse_counts_returns_none_when_no_match():
-    text = "No data returned."
-    counts = _try_parse_counts(text)
-    assert counts["total"] is None
-    assert counts["aws_launched"] is None
-    assert counts["closed_lost"] is None
-    assert counts["empty"] is None
-
-
-def test_parse_counts_extracts_closed_lost():
-    text = "3 opportunities have AWS stage Closed Lost."
-    counts = _try_parse_counts(text)
-    assert counts["closed_lost"] == 3
 
 
 # ── _extract_assistant_text ───────────────────────────────────────────────────
 
-def test_extract_assistant_text_parses_nested_json():
-    import json as _j
+def test_extract_parses_nested_json():
     from app.ceo_briefing import _extract_assistant_text
     payload = {
-        "text": _j.dumps({
+        "text": json.dumps({
             "content": [
-                {"type": "ASSISTANT_RESPONSE", "content": {"text": "Hello from MCP."}},
+                {"type": "ASSISTANT_RESPONSE", "content": {"text": "Pipeline looks healthy."}},
                 {"type": "serverToolResult", "content": {"data": "ignored"}},
             ]
         })
     }
-    assert _extract_assistant_text(payload) == "Hello from MCP."
+    assert _extract_assistant_text(payload) == "Pipeline looks healthy."
 
 
-def test_extract_assistant_text_falls_back_to_raw_on_invalid_json():
+def test_extract_joins_multiple_assistant_blocks():
+    from app.ceo_briefing import _extract_assistant_text
+    payload = {
+        "text": json.dumps({
+            "content": [
+                {"type": "ASSISTANT_RESPONSE", "content": {"text": "Part one."}},
+                {"type": "ASSISTANT_RESPONSE", "content": {"text": "Part two."}},
+            ]
+        })
+    }
+    result = _extract_assistant_text(payload)
+    assert "Part one." in result
+    assert "Part two." in result
+
+
+def test_extract_falls_back_to_raw_on_non_json():
     from app.ceo_briefing import _extract_assistant_text
     assert _extract_assistant_text({"text": "plain text"}) == "plain text"
 
 
-def test_extract_assistant_text_handles_none():
+def test_extract_returns_empty_on_none():
     from app.ceo_briefing import _extract_assistant_text
-    assert _extract_assistant_text(None) == "No data returned."
+    assert _extract_assistant_text(None) == ""
 
 
-# ── run_aws_stage_alignment ───────────────────────────────────────────────────
+def test_extract_returns_empty_on_missing_text_key():
+    from app.ceo_briefing import _extract_assistant_text
+    assert _extract_assistant_text({}) == ""
 
-import json as _json
+
+# ── _trunc ────────────────────────────────────────────────────────────────────
+
+def test_trunc_short_string_unchanged():
+    from app.ceo_briefing import _trunc
+    assert _trunc("hello", 10) == "hello"
+
+
+def test_trunc_long_string_cut_with_ellipsis():
+    from app.ceo_briefing import _trunc
+    result = _trunc("a" * 900)
+    assert len(result) == 800
+    assert result.endswith("…")
+
+
+# ── _mcp helper ───────────────────────────────────────────────────────────────
 
 _MCP_RESPONSE = {
-    "text": _json.dumps({
+    "text": json.dumps({
         "content": [
-            {
-                "type": "ASSISTANT_RESPONSE",
-                "content": {
-                    "text": "You have 10 total launched. 8 AWS Launched, 1 Closed Lost, 1 empty."
-                },
-            },
-            {
-                "type": "serverToolResult",
-                "content": {"result": "some tool data"},
-            },
+            {"type": "ASSISTANT_RESPONSE", "content": {"text": "5 opportunities at Committed stage."}},
         ]
     })
 }
 
 
 @patch("app.mcp_client.send_message", new_callable=AsyncMock, return_value=_MCP_RESPONSE)
-async def test_run_alignment_parses_response(mock_mcp):
-    from app.ceo_briefing import run_aws_stage_alignment
-    result = await run_aws_stage_alignment()
-    assert result["colour"] in ("GREEN", "AMBER", "RED", "UNKNOWN")
-    assert "text" in result
-    # Parsed text should contain the assistant words, not raw JSON
-    assert "Launched" in result["text"]
-    mock_mcp.assert_called_once()
+async def test_mcp_returns_extracted_text(mock_send):
+    from app.ceo_briefing import _mcp
+    result = await _mcp("any query")
+    assert result == "5 opportunities at Committed stage."
+    mock_send.assert_called_once()
 
 
 @patch("app.mcp_client.send_message", new_callable=AsyncMock, side_effect=Exception("timeout"))
-async def test_run_alignment_handles_mcp_failure(mock_mcp):
-    from app.ceo_briefing import run_aws_stage_alignment
-    result = await run_aws_stage_alignment()
-    assert result["colour"] == "UNKNOWN"
-    assert result["alignment_rate"] is None
-    assert "MCP query failed" in result["text"]
+async def test_mcp_returns_fallback_on_exception(mock_send):
+    from app.ceo_briefing import _mcp
+    result = await _mcp("any query")
+    assert result == "Query failed — check MCP connection."
+
+
+# ── run_briefing ──────────────────────────────────────────────────────────────
+
+@patch("app.ceo_briefing._mcp", new_callable=AsyncMock, return_value="mocked section text")
+async def test_run_briefing_returns_all_keys(mock_mcp):
+    from app.ceo_briefing import run_briefing
+    result = await run_briefing(stats={"total_leads": 3})
+    assert "date" in result
+    assert "pipeline" in result
+    assert "action_required" in result
+    assert "closing_soon" in result
+    assert "aws_stage" in result
+    assert "cosell" in result
+    assert "funding" in result
+    assert "weekly" in result
+    assert result["leads_today"] == 3
+
+
+@patch("app.ceo_briefing._mcp", new_callable=AsyncMock, return_value="ok")
+async def test_run_briefing_handles_none_stats(mock_mcp):
+    from app.ceo_briefing import run_briefing
+    result = await run_briefing(stats=None)
+    assert result["leads_today"] == 0
+
+
+@patch("app.ceo_briefing._mcp", new_callable=AsyncMock, return_value="ok")
+async def test_run_briefing_monday_includes_weekly(mock_mcp):
+    from app.ceo_briefing import run_briefing
+    import app.ceo_briefing as module
+    # Force is_monday by patching datetime
+    with patch("app.ceo_briefing.datetime") as mock_dt:
+        mock_dt.now.return_value.weekday.return_value = 0  # Monday
+        mock_dt.now.return_value.strftime.return_value = "07 Apr 2026"
+        result = await run_briefing()
+    assert result["is_monday"] is True
+    assert "close_date_cleanup" in result["weekly"]
+    assert "closed_lost_analysis" in result["weekly"]
+    assert "pipeline_velocity" in result["weekly"]
+
+
+@patch("app.ceo_briefing._mcp", new_callable=AsyncMock, return_value="ok")
+async def test_run_briefing_non_monday_empty_weekly(mock_mcp):
+    from app.ceo_briefing import run_briefing
+    with patch("app.ceo_briefing.datetime") as mock_dt:
+        mock_dt.now.return_value.weekday.return_value = 2  # Wednesday
+        mock_dt.now.return_value.strftime.return_value = "08 Apr 2026"
+        result = await run_briefing()
+    assert result["is_monday"] is False
+    assert result["weekly"] == {}
 
 
 # ── post_briefing_to_teams ────────────────────────────────────────────────────
 
-@patch("app.teams._post", new_callable=AsyncMock, return_value=True)
-async def test_post_briefing_green(mock_post):
-    from app.ceo_briefing import post_briefing_to_teams
-    alignment = {
-        "colour": "GREEN",
-        "text": "8 of 10 confirmed.",
-        "total": 10,
-        "aws_launched": 8,
-        "alignment_rate": 0.8,
-        "closed_lost": 1,
-        "empty": 1,
-    }
-    result = await post_briefing_to_teams(alignment)
-    assert result is True
-    card = mock_post.call_args[0][0]
-    assert card["themeColor"] == "00B050"
-    assert "AWS STAGE ALIGNMENT" in card["title"]
+_BRIEFING_DATA = {
+    "date": "07 Apr 2026",
+    "is_monday": False,
+    "pipeline": "5 Committed, 3 Launched",
+    "action_required": "Acme Corp: submit win wire",
+    "closing_soon": "Acme Corp closes 10 Apr",
+    "aws_stage": "8 Launched confirmed, 1 Closed Lost, 0 empty",
+    "cosell": "Bob Smith engaged on Acme deal",
+    "funding": "Acme eligible for MAP",
+    "weekly": {},
+    "leads_today": 12,
+}
 
 
+@patch("app.config.get_secret", return_value="DUMMY")
 @patch("app.teams._post", new_callable=AsyncMock, return_value=True)
-async def test_post_briefing_unknown_no_counts(mock_post):
+async def test_post_briefing_builds_correct_card(mock_post, mock_secret):
     from app.ceo_briefing import post_briefing_to_teams
-    alignment = {
-        "colour": "UNKNOWN",
-        "text": "No data.",
-        "total": None,
-        "aws_launched": None,
-        "alignment_rate": None,
-        "closed_lost": None,
-        "empty": None,
-    }
-    result = await post_briefing_to_teams(alignment)
+    result = await post_briefing_to_teams(_BRIEFING_DATA)
     assert result is True
     card = mock_post.call_args[0][0]
-    assert card["themeColor"] == "888888"
+    assert card["themeColor"] == "1F3D7A"
+    assert "CLOUDIQS CEO BRIEFING" in card["title"]
+    assert "07 Apr 2026" in card["title"]
+
+
+@patch("app.config.get_secret", return_value="DUMMY")
+@patch("app.teams._post", new_callable=AsyncMock, return_value=True)
+async def test_post_briefing_uses_fallback_when_ceo_key_missing(mock_post, mock_secret):
+    from app.ceo_briefing import post_briefing_to_teams
+    await post_briefing_to_teams(_BRIEFING_DATA)
+    _, kwargs = mock_post.call_args
+    assert kwargs.get("webhook_key") == "teams/webhook-url"
+
+
+@patch("app.config.get_secret", return_value="https://outlook.office.com/ceo-hook")
+@patch("app.teams._post", new_callable=AsyncMock, return_value=True)
+async def test_post_briefing_uses_ceo_webhook_when_configured(mock_post, mock_secret):
+    from app.ceo_briefing import post_briefing_to_teams
+    await post_briefing_to_teams(_BRIEFING_DATA)
+    _, kwargs = mock_post.call_args
+    assert kwargs.get("webhook_key") == "teams/ceo-webhook-url"
+
+
+@patch("app.config.get_secret", return_value="DUMMY")
+@patch("app.teams._post", new_callable=AsyncMock, return_value=True)
+async def test_post_briefing_monday_includes_weekly_section(mock_post, mock_secret):
+    from app.ceo_briefing import post_briefing_to_teams
+    data = dict(_BRIEFING_DATA, is_monday=True, weekly={
+        "close_date_cleanup": "3 deals overdue",
+        "closed_lost_analysis": "Top reason: budget",
+        "pipeline_velocity": "avg 45 days",
+    })
+    await post_briefing_to_teams(data)
+    card = mock_post.call_args[0][0]
+    section_titles = [s.get("activityTitle", "") for s in card["sections"]]
+    assert any("WEEKLY FOCUS" in t for t in section_titles)

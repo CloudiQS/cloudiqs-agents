@@ -1,18 +1,21 @@
 """
-CEO Briefing — AWS Stage Alignment tracking.
+CEO Briefing — comprehensive daily morning briefing for Steve.
 
-Queries Partner Central MCP for the real AWS-confirmed stage of our
-'Launched' opportunities and compares against what we self-report.
+Runs at 06:00 every day via POST /ceo/briefing (called by ceo-ops agent).
+Makes 6 Partner Central MCP queries in sequence, combines them with
+today's HubSpot lead stats, and posts a single structured Teams message.
 
-Exported functions:
-  run_aws_stage_alignment()   -> dict with counts and text
-  post_briefing_to_teams()    -> posts MessageCard to Teams (CEO channel)
+On Mondays, adds a weekly pipeline hygiene section (3 extra MCP queries).
+
+GET /ceo/briefing returns the same structured data as JSON without posting.
+
+Exported:
+  run_briefing(stats)           -> dict with all briefing sections
+  post_briefing_to_teams(data)  -> bool
 """
 
-import asyncio
 import json
 import logging
-import re
 from datetime import datetime
 from typing import Optional
 
@@ -20,69 +23,29 @@ from app import teams
 
 logger = logging.getLogger("bridge")
 
-# RAG thresholds — adjust as pipeline matures
-_GREEN_THRESHOLD = 0.80   # >= 80% alignment = GREEN
-_AMBER_THRESHOLD = 0.60   # 60–79% = AMBER, < 60% = RED
+_MAX_SECTION_CHARS = 800
 
 
-def _colour(rate: Optional[float]) -> str:
-    """Return GREEN / AMBER / RED indicator based on alignment rate."""
-    if rate is None:
-        return "UNKNOWN"
-    if rate >= _GREEN_THRESHOLD:
-        return "GREEN"
-    if rate >= _AMBER_THRESHOLD:
-        return "AMBER"
-    return "RED"
-
-
-def _theme_colour(label: str) -> str:
-    """Map colour label to Office 365 MessageCard hex theme colour."""
-    return {"GREEN": "00B050", "AMBER": "FFC000", "RED": "C00000"}.get(label, "888888")
-
-
-def _try_parse_counts(text: str) -> dict:
-    """Best-effort extraction of stage counts from MCP free-text response.
-
-    Returns dict with keys: total, aws_launched, closed_lost, empty.
-    All values default to None if not extractable.
-    """
-    def find_int(pattern: str) -> Optional[int]:
-        m = re.search(pattern, text, re.IGNORECASE)
-        return int(m.group(1)) if m else None
-
-    return {
-        "total": find_int(r"(\d+)\s+(?:total\s+)?launched"),
-        "aws_launched": find_int(
-            r"(\d+)\s+.*?(?:aws[- ]?launched|confirmed.*?launched|aws.*?stage.*?launched)"
-        ),
-        "closed_lost": find_int(r"(\d+)\s+.*?closed.?lost"),
-        "empty": find_int(
-            r"(\d+)\s+.*?(?:empty|not\s+set|missing|no\s+aws\s+stage)"
-        ),
-    }
-
+# ── MCP response parser ───────────────────────────────────────────────────────
 
 def _extract_assistant_text(result) -> str:
     """Extract readable text from a send_message response.
 
     result['text'] is a JSON string whose structure is:
-      {
-        "content": [
-          {"type": "ASSISTANT_RESPONSE", "content": {"text": "..."}},
-          {"type": "serverToolResult", "content": {...}},
-          ...
-        ]
-      }
+      {"content": [
+        {"type": "ASSISTANT_RESPONSE", "content": {"text": "..."}},
+        {"type": "serverToolResult", ...},
+      ]}
 
-    Collects all ASSISTANT_RESPONSE text blocks and joins them.
-    Falls back to the raw 'text' value if json.loads fails.
+    Collects all ASSISTANT_RESPONSE blocks and joins them.
+    Falls back to the raw 'text' string if json.loads fails.
+    Returns "" if result is None or has no text.
     """
     if not result:
-        return "No data returned."
+        return ""
     raw = result.get("text", "")
     if not raw:
-        return "No data returned."
+        return ""
     try:
         inner = json.loads(raw)
         parts = []
@@ -96,125 +59,172 @@ def _extract_assistant_text(result) -> str:
         text = "\n".join(p for p in parts if p).strip()
         return text or raw.strip()
     except (json.JSONDecodeError, AttributeError):
-        return raw.strip() or "No data returned."
+        return raw.strip()
 
 
-async def run_aws_stage_alignment() -> dict:
-    """Query MCP for AWS stage breakdown of Launched opportunities.
+def _trunc(text: str, limit: int = _MAX_SECTION_CHARS) -> str:
+    """Truncate text to limit chars, appending ellipsis if cut."""
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
 
-    Returns:
-        {
-          "text":           full MCP response text,
-          "total":          total Launched count (int or None),
-          "aws_launched":   AWS-confirmed Launched (int or None),
-          "closed_lost":    AWS Closed Lost (int or None),
-          "empty":          no AWS stage set (int or None),
-          "alignment_rate": float 0–1 (or None if counts unavailable),
-          "colour":         "GREEN" | "AMBER" | "RED" | "UNKNOWN",
-        }
-    """
+
+async def _mcp(query: str) -> str:
+    """Run one Partner Central MCP query. Returns fallback string on failure."""
     from app import mcp_client
-
-    query = (
-        "For my Launched opportunities, show how many have AWS stage as Launched "
-        "versus Closed Lost versus empty (no AWS stage set). "
-        "Give me the exact counts and a percentage breakdown."
-    )
-
     try:
         result = await mcp_client.send_message(query, catalog="AWS")
+        text = _extract_assistant_text(result)
+        return _trunc(text) if text else "No data returned."
     except Exception as exc:
-        logger.warning("ceo_briefing_mcp_failed", extra={"error": str(exc)})
-        return {
-            "text": f"MCP query failed: {exc}",
-            "total": None,
-            "aws_launched": None,
-            "closed_lost": None,
-            "empty": None,
-            "alignment_rate": None,
-            "colour": "UNKNOWN",
-        }
+        logger.warning(
+            "ceo_briefing_mcp_query_failed",
+            extra={"error": str(exc), "query": query[:60]},
+        )
+        return "Query failed — check MCP connection."
 
-    # result['text'] is a JSON string containing a content array.
-    # Walk the array and collect text from ASSISTANT_RESPONSE blocks.
-    text = _extract_assistant_text(result)
 
-    counts = _try_parse_counts(text)
-    alignment_rate: Optional[float] = None
-    if counts["total"] and counts["aws_launched"] is not None:
-        alignment_rate = counts["aws_launched"] / counts["total"]
+# ── Main briefing runner ──────────────────────────────────────────────────────
 
-    colour = _colour(alignment_rate)
-    logger.info(
-        "ceo_briefing_alignment",
-        extra={
-            "total": counts["total"],
-            "aws_launched": counts["aws_launched"],
-            "alignment_rate": alignment_rate,
-            "colour": colour,
-        },
+async def run_briefing(stats: Optional[dict] = None) -> dict:
+    """Run all CEO briefing queries in sequence and return structured data.
+
+    Args:
+        stats: Today's lead stats from bridge _stats dict.
+
+    Returns dict with keys for each Teams card section.
+    """
+    is_monday = datetime.now().weekday() == 0
+
+    pipeline = await _mcp(
+        "Give me a breakdown of all my opportunities by stage "
+        "with count and revenue per stage"
+    )
+    action_required = await _mcp(
+        "List all opportunities with Action Required status "
+        "with company name and what AWS needs"
+    )
+    closing_soon = await _mcp(
+        "Which opportunities have target close dates within 30 days? "
+        "Show company, close date, stage, and what is blocking"
+    )
+    aws_stage = await _mcp(
+        "For my Launched opportunities, how many have AWS stage Launched "
+        "versus Closed Lost versus empty?"
+    )
+    cosell = await _mcp(
+        "Which of my open opportunities have AWS Sales Reps actively engaged? "
+        "Show top 10 by expected spend with rep name"
+    )
+    funding = await _mcp(
+        "Which of my opportunities at Business Validation or Technical Validation "
+        "stage are eligible for funding?"
     )
 
+    weekly: dict = {}
+    if is_monday:
+        weekly["close_date_cleanup"] = await _mcp(
+            "How many of my open opportunities have close dates in the past? List them."
+        )
+        weekly["closed_lost_analysis"] = await _mcp(
+            "For my Closed Lost opportunities, what are the top 3 reasons for losing?"
+        )
+        weekly["pipeline_velocity"] = await _mcp(
+            "What is the average number of days opportunities take to progress "
+            "from Qualified to Launched stage?"
+        )
+
+    leads_today = (stats or {}).get("total_leads", 0)
+
     return {
-        "text": text,
-        "total": counts["total"],
-        "aws_launched": counts["aws_launched"],
-        "closed_lost": counts["closed_lost"],
-        "empty": counts["empty"],
-        "alignment_rate": alignment_rate,
-        "colour": colour,
+        "date": datetime.now().strftime("%d %b %Y"),
+        "is_monday": is_monday,
+        "pipeline": pipeline,
+        "action_required": action_required,
+        "closing_soon": closing_soon,
+        "aws_stage": aws_stage,
+        "cosell": cosell,
+        "funding": funding,
+        "weekly": weekly,
+        "leads_today": leads_today,
     }
 
 
-async def post_briefing_to_teams(alignment: dict) -> bool:
-    """Post AWS Stage Alignment card to the Teams CEO briefing channel.
+# ── Teams card formatter ──────────────────────────────────────────────────────
 
-    Colour coding:
-      GREEN  (>= 80% alignment) — dark green  #00B050
-      AMBER  (60–79%)           — gold        #FFC000
-      RED    (< 60%)            — dark red    #C00000
-      UNKNOWN                   — grey        #888888
+async def post_briefing_to_teams(data: dict) -> bool:
+    """Format briefing data as a Teams MessageCard and post it.
+
+    Posts to teams/ceo-webhook-url with fallback to teams/webhook-url.
     """
-    colour_label = alignment.get("colour", "UNKNOWN")
-    theme = _theme_colour(colour_label)
-    today = datetime.now().strftime("%d %b %Y")
+    date = data.get("date", datetime.now().strftime("%d %b %Y"))
+    is_monday = data.get("is_monday", False)
+    weekly = data.get("weekly", {})
+    leads_today = data.get("leads_today", 0)
 
-    rate = alignment.get("alignment_rate")
-    rate_str = f"{rate:.0%}" if rate is not None else "N/A"
+    sections = [
+        {
+            "activityTitle": "TODAY'S ACTIONS",
+            "activityText": (
+                f"**Action Required (AWS)**\n"
+                f"{data.get('action_required', 'None')}\n\n"
+                f"**Deals closing this month**\n"
+                f"{data.get('closing_soon', 'None')}"
+            ),
+        },
+        {
+            "activityTitle": "PIPELINE SCORECARD",
+            "activityText": data.get("pipeline", "No data."),
+        },
+        {
+            "activityTitle": "AWS STAGE TRUTH",
+            "activityText": data.get("aws_stage", "No data."),
+        },
+        {
+            "activityTitle": "AT RISK THIS MONTH",
+            "activityText": data.get("closing_soon", "No data."),
+        },
+        {
+            "activityTitle": "FUNDING OPPORTUNITIES",
+            "activityText": data.get("funding", "No data."),
+        },
+        {
+            "activityTitle": "CO-SELL ACTIVE",
+            "activityText": data.get("cosell", "No data."),
+        },
+        {
+            "activityTitle": "ENGINE HEALTH",
+            "activityText": (
+                f"Leads found today: {leads_today}\n"
+                f"Bridge: healthy"
+            ),
+        },
+    ]
 
-    # Quarterly scorecard facts
-    scorecard_facts: list[dict] = []
-    if alignment.get("aws_launched") is not None:
-        scorecard_facts.append(
-            {"name": "AWS-confirmed Launched", "value": str(alignment["aws_launched"])}
+    if is_monday and weekly:
+        sections.append(
+            {
+                "activityTitle": "WEEKLY FOCUS (Monday)",
+                "activityText": (
+                    f"**Close date cleanup**\n"
+                    f"{weekly.get('close_date_cleanup', 'N/A')}\n\n"
+                    f"**Closed lost analysis**\n"
+                    f"{weekly.get('closed_lost_analysis', 'N/A')}\n\n"
+                    f"**Pipeline velocity**\n"
+                    f"{weekly.get('pipeline_velocity', 'N/A')}"
+                ),
+            }
         )
-    if alignment.get("total") is not None and alignment.get("aws_launched") is not None:
-        mismatch = alignment["total"] - alignment["aws_launched"]
-        scorecard_facts.append({"name": "Stage mismatch", "value": str(mismatch)})
-    scorecard_facts.append({"name": "True launch rate", "value": rate_str})
-
-    colour_emoji = {"GREEN": "🟢", "AMBER": "🟡", "RED": "🔴"}.get(colour_label, "⚪")
-    scorecard_facts.append({"name": "Status", "value": f"{colour_emoji} {colour_label}"})
 
     card = {
         "@type": "MessageCard",
         "@context": "https://schema.org/extensions",
-        "themeColor": theme,
-        "summary": f"CEO Briefing — AWS Stage Alignment {today}",
-        "title": f"AWS STAGE ALIGNMENT — {today}",
-        "sections": [
-            {
-                "activityTitle": "Launched Opportunity Stage Breakdown",
-                "activityText": alignment.get("text", "No data."),
-            },
-            {
-                "activityTitle": "Quarterly Scorecard",
-                "facts": scorecard_facts,
-            },
-        ],
+        "themeColor": "1F3D7A",
+        "summary": f"CloudiQS CEO Briefing {date}",
+        "title": f"CLOUDIQS CEO BRIEFING — {date}",
+        "sections": sections,
     }
 
-    # Try dedicated CEO webhook first, fall back to generic channel
     from app.config import get_secret, is_dummy
     ceo_key = get_secret("teams/ceo-webhook-url")
     webhook_key = "teams/ceo-webhook-url" if not is_dummy(ceo_key) else "teams/webhook-url"

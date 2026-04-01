@@ -876,37 +876,33 @@ async def mcp_architecture(request: Request):
 
 @app.post("/ceo/briefing")
 async def ceo_briefing_post():
-    """Run CEO briefing — AWS stage alignment check.
+    """Run CEO daily briefing.
 
-    Queries Partner Central MCP for the real AWS-confirmed stage of
-    Launched opportunities versus what we self-report.
-
-    Posts a formatted MessageCard to Teams with GREEN/AMBER/RED status
-    and a quarterly scorecard: AWS-confirmed count, mismatch count,
-    true launch rate.
+    Makes 6 Partner Central MCP queries (9 on Mondays) covering pipeline
+    scorecard, actions required, deals closing soon, AWS stage truth,
+    co-sell activity, and funding eligibility. Combines with today's lead
+    stats and posts a single structured MessageCard to the CEO Teams channel.
 
     Called by ceo-ops agent on its 06:00 daily schedule.
     """
     from app import ceo_briefing as _ceo
     logger.info("ceo_briefing_started")
-    alignment = await _ceo.run_aws_stage_alignment()
-    await _ceo.post_briefing_to_teams(alignment)
-    logger.info("ceo_briefing_complete", extra={"colour": alignment.get("colour")})
+    data = await _ceo.run_briefing(stats=_stats)
+    await _ceo.post_briefing_to_teams(data)
+    logger.info("ceo_briefing_complete", extra={"date": data.get("date")})
     return {
         "status": "complete",
-        "date": datetime.now().strftime("%Y-%m-%d"),
-        "aws_stage_alignment": {
-            "colour": alignment.get("colour"),
-            "alignment_rate": alignment.get("alignment_rate"),
-            "total_launched": alignment.get("total"),
-            "aws_confirmed": alignment.get("aws_launched"),
-            "closed_lost": alignment.get("closed_lost"),
-            "no_aws_stage": alignment.get("empty"),
-        },
+        "date": data.get("date"),
+        "leads_today": data.get("leads_today"),
+        "is_monday": data.get("is_monday"),
     }
 
 
 @app.get("/ceo/briefing")
 async def ceo_briefing_get():
-    """GET version of CEO briefing — callable via curl from cron agents."""
-    return await ceo_briefing_post()
+    """Return today's CEO briefing data as JSON without posting to Teams.
+
+    Useful for the ops dashboard and ad-hoc inspection via curl.
+    """
+    from app import ceo_briefing as _ceo
+    return await _ceo.run_briefing(stats=_stats)

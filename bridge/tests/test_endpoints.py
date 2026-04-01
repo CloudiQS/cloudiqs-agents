@@ -272,48 +272,41 @@ def test_check_lead_no_email(client, auth):
 
 # ── /ceo/briefing endpoint ────────────────────────────────────────────────────
 
+_BRIEFING_RESULT = {
+    "date": "07 Apr 2026",
+    "is_monday": False,
+    "pipeline": "5 Committed",
+    "action_required": "Acme: submit win wire",
+    "closing_soon": "Acme closes 10 Apr",
+    "aws_stage": "8 confirmed",
+    "cosell": "Bob Smith engaged",
+    "funding": "Acme eligible MAP",
+    "weekly": {},
+    "leads_today": 5,
+}
+
+
 @patch("app.ceo_briefing.post_briefing_to_teams", new_callable=AsyncMock, return_value=True)
-@patch(
-    "app.ceo_briefing.run_aws_stage_alignment",
-    new_callable=AsyncMock,
-    return_value={
-        "text": "10 Launched: 8 AWS Launched, 1 Closed Lost, 1 empty",
-        "total": 10,
-        "aws_launched": 8,
-        "closed_lost": 1,
-        "empty": 1,
-        "alignment_rate": 0.8,
-        "colour": "GREEN",
-    },
-)
-def test_ceo_briefing_post_returns_complete(mock_align, mock_post, client, auth):
+@patch("app.ceo_briefing.run_briefing", new_callable=AsyncMock, return_value=_BRIEFING_RESULT)
+def test_ceo_briefing_post_returns_complete(mock_run, mock_post, client, auth):
     r = client.post("/ceo/briefing", headers=auth)
     assert r.status_code == 200
     data = r.json()
     assert data["status"] == "complete"
-    assert data["aws_stage_alignment"]["colour"] == "GREEN"
-    assert data["aws_stage_alignment"]["total_launched"] == 10
-    assert data["aws_stage_alignment"]["aws_confirmed"] == 8
-    mock_align.assert_called_once()
+    assert data["date"] == "07 Apr 2026"
+    assert data["leads_today"] == 5
+    mock_run.assert_called_once()
     mock_post.assert_called_once()
 
 
-@patch("app.ceo_briefing.post_briefing_to_teams", new_callable=AsyncMock, return_value=True)
-@patch(
-    "app.ceo_briefing.run_aws_stage_alignment",
-    new_callable=AsyncMock,
-    return_value={
-        "text": "MCP query failed",
-        "total": None,
-        "aws_launched": None,
-        "closed_lost": None,
-        "empty": None,
-        "alignment_rate": None,
-        "colour": "UNKNOWN",
-    },
-)
-def test_ceo_briefing_get_returns_complete(mock_align, mock_post, client, auth):
+@patch("app.ceo_briefing.run_briefing", new_callable=AsyncMock, return_value=_BRIEFING_RESULT)
+def test_ceo_briefing_get_returns_json_no_teams(mock_run, client, auth):
     r = client.get("/ceo/briefing", headers=auth)
     assert r.status_code == 200
-    assert r.json()["status"] == "complete"
-    assert r.json()["aws_stage_alignment"]["colour"] == "UNKNOWN"
+    data = r.json()
+    # GET returns full briefing dict, not posting to Teams
+    assert "pipeline" in data
+    assert "action_required" in data
+    assert "aws_stage" in data
+    assert "funding" in data
+    mock_run.assert_called_once()
