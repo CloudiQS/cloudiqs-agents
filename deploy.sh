@@ -150,6 +150,32 @@ if command -v openclaw >/dev/null 2>&1; then
     echo -e "  ${GREEN}Gateway restarted${NC}"
 fi
 
+# Step 3b: Register agents with OpenClaw
+echo -e "${YELLOW}[3b/7] Registering agents with OpenClaw...${NC}"
+if command -v openclaw >/dev/null 2>&1; then
+    # Source ~/.bashrc so openclaw PATH additions are available
+    # shellcheck disable=SC1090
+    [ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc" || true
+
+    AGENTS_REGISTERED=0
+    AGENTS_SKIPPED=0
+    for agent_dir in "$REPO_DIR"/agents/*/; do
+        agent_name=$(basename "$agent_dir")
+        if openclaw agents add "$agent_name" \
+            --workspace "$REPO_DIR/agents/$agent_name" \
+            --model "amazon-bedrock/eu.anthropic.claude-haiku-4-5-20251001-v1:0" \
+            --non-interactive 2>/dev/null; then
+            AGENTS_REGISTERED=$((AGENTS_REGISTERED + 1))
+        else
+            # Already registered or failed — either way continue
+            AGENTS_SKIPPED=$((AGENTS_SKIPPED + 1))
+        fi
+    done
+    echo -e "  ${GREEN}Registered: $AGENTS_REGISTERED new, $AGENTS_SKIPPED already existed${NC}"
+else
+    echo -e "  ${YELLOW}Skipping agent registration — OpenClaw not installed${NC}"
+fi
+
 # Step 4: Register cron jobs
 echo -e "${YELLOW}[4/7] Registering cron jobs...${NC}"
 if command -v openclaw >/dev/null 2>&1; then

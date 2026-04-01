@@ -14,6 +14,16 @@ NOVA="global.amazon.nova-lite-v1:0"
 HAIKU="global.anthropic.claude-haiku-4-5-20251001-v1:0"
 SONNET="global.anthropic.claude-sonnet-4-6"
 
+echo -e "${YELLOW}[0/3] Preflight: verifying agents are registered...${NC}"
+AGENT_COUNT=$(openclaw agents list 2>/dev/null | grep -c "." || echo "0")
+if [ "$AGENT_COUNT" -lt 40 ] 2>/dev/null; then
+    echo -e "  ${RED}ERROR: Only $AGENT_COUNT agents registered in OpenClaw (expected 40+).${NC}"
+    echo -e "  ${RED}Run deploy.sh first to register agents before adding cron jobs.${NC}"
+    exit 1
+fi
+echo -e "  ${GREEN}$AGENT_COUNT agents registered — OK${NC}"
+echo ""
+
 echo -e "${YELLOW}[0/3] Preflight: verifying openclaw cron add flag syntax...${NC}"
 
 # Check that openclaw supports the flags this script expects.
