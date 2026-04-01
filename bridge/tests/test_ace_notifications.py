@@ -2,24 +2,15 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
-# ── _ace_post webhook routing ─────────────────────────────────────────────────
+# ── _ace_post delegates to teams.post_to_ace ─────────────────────────────────
 
-@patch("app.config.get_secret", return_value="https://outlook.office.com/ace-hook")
-@patch("app.teams._post", new_callable=AsyncMock, return_value=True)
-async def test_ace_post_uses_dedicated_webhook(mock_post, mock_secret):
+@patch("app.teams.post_to_ace", new_callable=AsyncMock, return_value=True)
+async def test_ace_post_delegates_to_post_to_ace(mock_fn):
     from app.ace_notifications import _ace_post
-    await _ace_post({"@type": "MessageCard"})
-    _, kwargs = mock_post.call_args
-    assert kwargs.get("webhook_key") == "teams/ace-webhook-url"
-
-
-@patch("app.config.get_secret", return_value="DUMMY")
-@patch("app.teams._post", new_callable=AsyncMock, return_value=True)
-async def test_ace_post_falls_back_to_generic(mock_post, mock_secret):
-    from app.ace_notifications import _ace_post
-    await _ace_post({"@type": "MessageCard"})
-    _, kwargs = mock_post.call_args
-    assert kwargs.get("webhook_key") == "teams/webhook-url"
+    card = {"@type": "MessageCard", "title": "test"}
+    result = await _ace_post(card)
+    assert result is True
+    mock_fn.assert_called_once_with(card)
 
 
 # ── notify_created ────────────────────────────────────────────────────────────

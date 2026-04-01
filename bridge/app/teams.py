@@ -1,8 +1,13 @@
 """Microsoft Teams notifications via incoming webhook.
 
-Two public helpers:
-  notify(text)      - plain text for replies, errors, system alerts
-  notify_lead(dict) - rich MessageCard matching the CloudiQS lead card format
+Three channel routing functions (use these, not _post directly):
+  post_to_sdr(payload)  - SDR alerts channel   (teams/webhook-url)
+  post_to_ceo(payload)  - CEO briefing channel  (teams/ceo-webhook-url)
+  post_to_ace(payload)  - ACE updates channel   (teams/ace-webhook-url)
+
+Legacy helpers (kept for backward compatibility and plain-text messages):
+  notify(text)      - plain text to SDR channel
+  notify_lead(dict) - rich lead card to SDR channel
 """
 
 import logging
@@ -36,10 +41,37 @@ async def _post(payload: dict, webhook_key: str = "teams/webhook-url") -> bool:
     return False
 
 
+# ── Named channel routing functions ──────────────────────────────────────────
+
+async def post_to_sdr(payload: dict) -> bool:
+    """Post any payload to the SDR alerts channel (teams/webhook-url)."""
+    return await _post(payload, webhook_key="teams/webhook-url")
+
+
+async def post_to_ceo(payload: dict) -> bool:
+    """Post any payload to the CEO briefing channel (teams/ceo-webhook-url).
+
+    Falls back to teams/webhook-url if the CEO secret is not configured.
+    """
+    key = get_secret("teams/ceo-webhook-url")
+    webhook_key = "teams/ceo-webhook-url" if not is_dummy(key) else "teams/webhook-url"
+    return await _post(payload, webhook_key=webhook_key)
+
+
+async def post_to_ace(payload: dict) -> bool:
+    """Post any payload to the ACE updates channel (teams/ace-webhook-url).
+
+    Falls back to teams/webhook-url if the ACE secret is not configured.
+    """
+    key = get_secret("teams/ace-webhook-url")
+    webhook_key = "teams/ace-webhook-url" if not is_dummy(key) else "teams/webhook-url"
+    return await _post(payload, webhook_key=webhook_key)
+
+
 # ── Plain text notifications (replies, alerts, system events) ─────────────────
 
 async def notify(text: str, webhook_key: str = "teams/webhook-url") -> bool:
-    """Send a plain-text message to Teams."""
+    """Send a plain-text message to Teams. Defaults to SDR channel."""
     return await _post({"text": text}, webhook_key=webhook_key)
 
 
@@ -136,4 +168,4 @@ async def notify_lead(lead_data: dict) -> bool:
         "title": f"New Lead | ICP {icp}/10 | {campaign}",
         "sections": sections,
     }
-    return await _post(card)
+    return await post_to_sdr(card)

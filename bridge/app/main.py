@@ -358,10 +358,12 @@ async def ingest(payload: IngestPayload):
     deal_id = await hubspot.create_ingest_deal(payload)
 
     if deal_id:
-        await teams.notify(
-            f"**Ingest** | {payload.company} | {payload.campaign}\n"
-            f"Deal: {deal_id} | Source: {payload.source}"
-        )
+        await teams.post_to_sdr({
+            "text": (
+                f"**Ingest** | {payload.company} | {payload.campaign}\n"
+                f"Deal: {deal_id} | Source: {payload.source}"
+            )
+        })
 
     return {
         "status": "created" if deal_id else "skipped",
@@ -558,37 +560,6 @@ async def _run_ace_hygiene() -> dict:
     return report
 
 
-async def _post_hygiene_to_teams(report: dict) -> None:
-    """Post formatted ACE hygiene report as a Teams MessageCard."""
-    today = datetime.now().strftime("%d %b %Y")
-
-    card = {
-        "@type": "MessageCard",
-        "@context": "https://schema.org/extensions",
-        "themeColor": "0078D4",
-        "summary": f"ACE Hygiene Report {today}",
-        "title": f"ACE HYGIENE REPORT — {today}",
-        "sections": [
-            {
-                "activityTitle": "⚠️ ACTION REQUIRED",
-                "activityText": report.get("action_required", "None"),
-            },
-            {
-                "activityTitle": "⏰ STALE LAUNCHED (30+ days no update)",
-                "activityText": report.get("stale_launched", "None"),
-            },
-            {
-                "activityTitle": "💰 FUNDING ELIGIBLE",
-                "activityText": report.get("funding_eligible", "None"),
-            },
-        ],
-    }
-    # Try dedicated ACE webhook first, fall back to generic channel
-    from app.config import get_secret, is_dummy
-    ace_key = get_secret("teams/ace-webhook-url")
-    webhook_key = "teams/ace-webhook-url" if not is_dummy(ace_key) else "teams/webhook-url"
-    await teams._post(card, webhook_key=webhook_key)
-
 
 @app.post("/ace/hygiene")
 async def ace_hygiene_post():
@@ -686,12 +657,14 @@ async def webhook_instantly(request: Request):
         _save_events_to_disk(_webhook_events)
 
     if event_type in ("reply", "reply_received", "responded"):
-        await teams.notify(
-            f"**Reply Received** | {email}\n"
-            f"Campaign: {campaign_id}\n"
-            f"Reply: {reply_text[:200] if reply_text else 'no text captured'}\n\n"
-            "Awaiting classification by sdr-reply-handler."
-        )
+        await teams.post_to_sdr({
+            "text": (
+                f"**Reply Received** | {email}\n"
+                f"Campaign: {campaign_id}\n"
+                f"Reply: {reply_text[:200] if reply_text else 'no text captured'}\n\n"
+                "Awaiting classification by sdr-reply-handler."
+            )
+        })
 
     return {"status": "received", "event_type": event_type}
 

@@ -225,7 +225,4 @@ async def post_briefing_to_teams(data: dict) -> bool:
         "sections": sections,
     }
 
-    from app.config import get_secret, is_dummy
-    ceo_key = get_secret("teams/ceo-webhook-url")
-    webhook_key = "teams/ceo-webhook-url" if not is_dummy(ceo_key) else "teams/webhook-url"
-    return await teams._post(card, webhook_key=webhook_key)
+    return await teams.post_to_ceo(card)

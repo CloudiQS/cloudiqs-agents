@@ -41,11 +41,8 @@ _BLUE = "0078D4"
 # ── Internal helper ───────────────────────────────────────────────────────────
 
 async def _ace_post(card: dict) -> bool:
-    """Post a card to ace-webhook-url, falling back to teams/webhook-url."""
-    from app.config import get_secret, is_dummy
-    key = get_secret("teams/ace-webhook-url")
-    webhook_key = "teams/ace-webhook-url" if not is_dummy(key) else "teams/webhook-url"
-    return await teams._post(card, webhook_key=webhook_key)
+    """Post a card to the ACE updates channel via teams.post_to_ace."""
+    return await teams.post_to_ace(card)
 
 
 def _card(colour: str, title: str, summary: str, body: str) -> dict:

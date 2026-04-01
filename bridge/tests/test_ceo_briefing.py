@@ -154,39 +154,26 @@ _BRIEFING_DATA = {
 }
 
 
-@patch("app.config.get_secret", return_value="DUMMY")
-@patch("app.teams._post", new_callable=AsyncMock, return_value=True)
-async def test_post_briefing_builds_correct_card(mock_post, mock_secret):
+@patch("app.teams.post_to_ceo", new_callable=AsyncMock, return_value=True)
+async def test_post_briefing_builds_correct_card(mock_post_to_ceo):
     from app.ceo_briefing import post_briefing_to_teams
     result = await post_briefing_to_teams(_BRIEFING_DATA)
     assert result is True
-    card = mock_post.call_args[0][0]
+    card = mock_post_to_ceo.call_args[0][0]
     assert card["themeColor"] == "1F3D7A"
     assert "CLOUDIQS CEO BRIEFING" in card["title"]
     assert "07 Apr 2026" in card["title"]
 
 
-@patch("app.config.get_secret", return_value="DUMMY")
-@patch("app.teams._post", new_callable=AsyncMock, return_value=True)
-async def test_post_briefing_uses_fallback_when_ceo_key_missing(mock_post, mock_secret):
+@patch("app.teams.post_to_ceo", new_callable=AsyncMock, return_value=True)
+async def test_post_briefing_routes_to_ceo_channel(mock_post_to_ceo):
     from app.ceo_briefing import post_briefing_to_teams
     await post_briefing_to_teams(_BRIEFING_DATA)
-    _, kwargs = mock_post.call_args
-    assert kwargs.get("webhook_key") == "teams/webhook-url"
+    mock_post_to_ceo.assert_called_once()
 
 
-@patch("app.config.get_secret", return_value="https://outlook.office.com/ceo-hook")
-@patch("app.teams._post", new_callable=AsyncMock, return_value=True)
-async def test_post_briefing_uses_ceo_webhook_when_configured(mock_post, mock_secret):
-    from app.ceo_briefing import post_briefing_to_teams
-    await post_briefing_to_teams(_BRIEFING_DATA)
-    _, kwargs = mock_post.call_args
-    assert kwargs.get("webhook_key") == "teams/ceo-webhook-url"
-
-
-@patch("app.config.get_secret", return_value="DUMMY")
-@patch("app.teams._post", new_callable=AsyncMock, return_value=True)
-async def test_post_briefing_monday_includes_weekly_section(mock_post, mock_secret):
+@patch("app.teams.post_to_ceo", new_callable=AsyncMock, return_value=True)
+async def test_post_briefing_monday_includes_weekly_section(mock_post_to_ceo):
     from app.ceo_briefing import post_briefing_to_teams
     data = dict(_BRIEFING_DATA, is_monday=True, weekly={
         "close_date_cleanup": "3 deals overdue",
@@ -194,6 +181,6 @@ async def test_post_briefing_monday_includes_weekly_section(mock_post, mock_secr
         "pipeline_velocity": "avg 45 days",
     })
     await post_briefing_to_teams(data)
-    card = mock_post.call_args[0][0]
+    card = mock_post_to_ceo.call_args[0][0]
     section_titles = [s.get("activityTitle", "") for s in card["sections"]]
     assert any("WEEKLY FOCUS" in t for t in section_titles)
