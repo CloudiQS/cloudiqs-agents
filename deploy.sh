@@ -13,8 +13,18 @@ REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 OPENCLAW_DIR="$HOME/.openclaw"
 BRIDGE_DIR="$HOME/bridge"
 
-# Add snap binaries to PATH so AWS CLI (installed as snap) is always found
+# Ensure AWS CLI v2 is installed (required for Secrets Manager reads and S3 poller)
 export PATH="/snap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+if ! command -v aws >/dev/null 2>&1; then
+    echo -e "${YELLOW}AWS CLI not found — installing v2...${NC}"
+    cd /tmp
+    curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+    unzip -q awscliv2.zip
+    sudo ./aws/install
+    rm -rf awscliv2.zip aws/
+    cd "$REPO_DIR"
+    echo -e "  ${GREEN}AWS CLI v2 installed: $(aws --version)${NC}"
+fi
 
 # Stack name drives ALL resource naming
 # Set via: STACK_NAME=cloudiqs-engine bash deploy.sh
