@@ -214,4 +214,8 @@ async def post_briefing_to_teams(alignment: dict) -> bool:
         ],
     }
 
-    return await teams._post(card)
+    # Try dedicated CEO webhook first, fall back to generic channel
+    from app.config import get_secret, is_dummy
+    ceo_key = get_secret("teams/ceo-webhook-url")
+    webhook_key = "teams/ceo-webhook-url" if not is_dummy(ceo_key) else "teams/webhook-url"
+    return await teams._post(card, webhook_key=webhook_key)

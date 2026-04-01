@@ -586,7 +586,11 @@ async def _post_hygiene_to_teams(report: dict) -> None:
             },
         ],
     }
-    await teams._post(card)
+    # Try dedicated ACE webhook first, fall back to generic channel
+    from app.config import get_secret, is_dummy
+    ace_key = get_secret("teams/ace-webhook-url")
+    webhook_key = "teams/ace-webhook-url" if not is_dummy(ace_key) else "teams/webhook-url"
+    await teams._post(card, webhook_key=webhook_key)
 
 
 @app.post("/ace/hygiene")
