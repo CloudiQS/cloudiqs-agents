@@ -14,7 +14,7 @@ async def test_post_to_sdr_uses_webhook_url(mock_post):
 
 # ── post_to_ceo ───────────────────────────────────────────────────────────────
 
-@patch("app.config.get_secret", return_value="https://outlook.office.com/ceo-hook")
+@patch("app.teams.get_secret", return_value="https://outlook.office.com/ceo-hook")
 @patch("app.teams._post", new_callable=AsyncMock, return_value=True)
 async def test_post_to_ceo_uses_ceo_key_when_set(mock_post, mock_secret):
     from app.teams import post_to_ceo
@@ -23,7 +23,7 @@ async def test_post_to_ceo_uses_ceo_key_when_set(mock_post, mock_secret):
     assert kwargs["webhook_key"] == "teams/ceo-webhook-url"
 
 
-@patch("app.config.get_secret", return_value="DUMMY")
+@patch("app.teams.get_secret", return_value="DUMMY")
 @patch("app.teams._post", new_callable=AsyncMock, return_value=True)
 async def test_post_to_ceo_falls_back_when_key_missing(mock_post, mock_secret):
     from app.teams import post_to_ceo
@@ -34,7 +34,7 @@ async def test_post_to_ceo_falls_back_when_key_missing(mock_post, mock_secret):
 
 # ── post_to_ace ───────────────────────────────────────────────────────────────
 
-@patch("app.config.get_secret", return_value="https://outlook.office.com/ace-hook")
+@patch("app.teams.get_secret", return_value="https://outlook.office.com/ace-hook")
 @patch("app.teams._post", new_callable=AsyncMock, return_value=True)
 async def test_post_to_ace_uses_ace_key_when_set(mock_post, mock_secret):
     from app.teams import post_to_ace
@@ -43,7 +43,7 @@ async def test_post_to_ace_uses_ace_key_when_set(mock_post, mock_secret):
     assert kwargs["webhook_key"] == "teams/ace-webhook-url"
 
 
-@patch("app.config.get_secret", return_value="DUMMY")
+@patch("app.teams.get_secret", return_value="DUMMY")
 @patch("app.teams._post", new_callable=AsyncMock, return_value=True)
 async def test_post_to_ace_falls_back_when_key_missing(mock_post, mock_secret):
     from app.teams import post_to_ace
