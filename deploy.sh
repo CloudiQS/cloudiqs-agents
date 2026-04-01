@@ -109,16 +109,35 @@ else
     echo -e "  ${RED}Check: sudo docker logs $BRIDGE_CONTAINER${NC}"
 fi
 
-# Step 3: Restart gateway
-echo -e "${YELLOW}[3/7] Restarting OpenClaw gateway...${NC}"
+# Step 3: Install OpenClaw if missing, then start gateway
+echo -e "${YELLOW}[3/7] OpenClaw gateway...${NC}"
+if ! command -v openclaw >/dev/null 2>&1; then
+    echo -e "  ${YELLOW}OpenClaw not found — checking Secrets Manager for install command...${NC}"
+    OPENCLAW_INSTALL_CMD=$(aws secretsmanager get-secret-value \
+        --secret-id "cloudiqs/${STACK_NAME}/openclaw/install-cmd" \
+        --region "$AWS_REGION" \
+        --query SecretString --output text 2>/dev/null || echo "DUMMY")
+
+    if [ "$OPENCLAW_INSTALL_CMD" = "DUMMY" ] || [ -z "$OPENCLAW_INSTALL_CMD" ]; then
+        echo -e "  ${YELLOW}No install command in Secrets Manager (cloudiqs/${STACK_NAME}/openclaw/install-cmd).${NC}"
+        echo -e "  ${YELLOW}Add it via: aws secretsmanager put-secret-value --secret-id cloudiqs/${STACK_NAME}/openclaw/install-cmd --secret-string 'YOUR_INSTALL_CMD'${NC}"
+        echo -e "  ${YELLOW}Skipping gateway and cron registration.${NC}"
+    else
+        echo -e "  ${YELLOW}Installing OpenClaw...${NC}"
+        eval "$OPENCLAW_INSTALL_CMD"
+        if command -v openclaw >/dev/null 2>&1; then
+            echo -e "  ${GREEN}OpenClaw installed: $(openclaw --version 2>/dev/null || echo 'ok')${NC}"
+        else
+            echo -e "  ${RED}OpenClaw install failed — check install command in Secrets Manager${NC}"
+        fi
+    fi
+fi
+
 if command -v openclaw >/dev/null 2>&1; then
     export XDG_RUNTIME_DIR=/run/user/$(id -u)
-    export PATH=/usr/local/bin:$PATH
     openclaw gateway restart 2>/dev/null || openclaw gateway start 2>/dev/null || true
     sleep 3
     echo -e "  ${GREEN}Gateway restarted${NC}"
-else
-    echo -e "  ${YELLOW}OpenClaw not installed — skipping gateway. Install via SSM then re-run deploy.sh${NC}"
 fi
 
 # Step 4: Register cron jobs
@@ -126,7 +145,7 @@ echo -e "${YELLOW}[4/7] Registering cron jobs...${NC}"
 if command -v openclaw >/dev/null 2>&1; then
     bash "$REPO_DIR/scripts/register-cron-jobs.sh"
 else
-    echo -e "  ${YELLOW}OpenClaw not installed — skipping cron registration. Install via SSM then re-run deploy.sh${NC}"
+    echo -e "  ${YELLOW}Skipping cron registration — OpenClaw not installed${NC}"
 fi
 
 # Step 5: Install pollers
