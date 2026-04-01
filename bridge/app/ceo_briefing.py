@@ -10,6 +10,7 @@ Exported functions:
 """
 
 import asyncio
+import json
 import logging
 import re
 from datetime import datetime
@@ -62,6 +63,42 @@ def _try_parse_counts(text: str) -> dict:
     }
 
 
+def _extract_assistant_text(result) -> str:
+    """Extract readable text from a send_message response.
+
+    result['text'] is a JSON string whose structure is:
+      {
+        "content": [
+          {"type": "ASSISTANT_RESPONSE", "content": {"text": "..."}},
+          {"type": "serverToolResult", "content": {...}},
+          ...
+        ]
+      }
+
+    Collects all ASSISTANT_RESPONSE text blocks and joins them.
+    Falls back to the raw 'text' value if json.loads fails.
+    """
+    if not result:
+        return "No data returned."
+    raw = result.get("text", "")
+    if not raw:
+        return "No data returned."
+    try:
+        inner = json.loads(raw)
+        parts = []
+        for block in inner.get("content", []):
+            if block.get("type") == "ASSISTANT_RESPONSE":
+                content = block.get("content", {})
+                if isinstance(content, dict):
+                    parts.append(content.get("text", ""))
+                elif isinstance(content, str):
+                    parts.append(content)
+        text = "\n".join(p for p in parts if p).strip()
+        return text or raw.strip()
+    except (json.JSONDecodeError, AttributeError):
+        return raw.strip() or "No data returned."
+
+
 async def run_aws_stage_alignment() -> dict:
     """Query MCP for AWS stage breakdown of Launched opportunities.
 
@@ -85,10 +122,7 @@ async def run_aws_stage_alignment() -> dict:
     )
 
     try:
-        result = await asyncio.wait_for(
-            mcp_client.send_message(query, catalog="AWS"),
-            timeout=30.0,
-        )
+        result = await mcp_client.send_message(query, catalog="AWS")
     except Exception as exc:
         logger.warning("ceo_briefing_mcp_failed", extra={"error": str(exc)})
         return {
@@ -101,15 +135,9 @@ async def run_aws_stage_alignment() -> dict:
             "colour": "UNKNOWN",
         }
 
-    # Extract plain text from mcp_client response structure
-    text = ""
-    if result:
-        text = result.get("text", "")
-        if not text:
-            for block in result.get("content", []):
-                if block.get("type") == "text":
-                    text += block.get("text", "")
-    text = text.strip() or "No data returned."
+    # result['text'] is a JSON string containing a content array.
+    # Walk the array and collect text from ASSISTANT_RESPONSE blocks.
+    text = _extract_assistant_text(result)
 
     counts = _try_parse_counts(text)
     alignment_rate: Optional[float] = None

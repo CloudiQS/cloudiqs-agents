@@ -67,16 +67,62 @@ def test_parse_counts_extracts_closed_lost():
     assert counts["closed_lost"] == 3
 
 
+# ── _extract_assistant_text ───────────────────────────────────────────────────
+
+def test_extract_assistant_text_parses_nested_json():
+    import json as _j
+    from app.ceo_briefing import _extract_assistant_text
+    payload = {
+        "text": _j.dumps({
+            "content": [
+                {"type": "ASSISTANT_RESPONSE", "content": {"text": "Hello from MCP."}},
+                {"type": "serverToolResult", "content": {"data": "ignored"}},
+            ]
+        })
+    }
+    assert _extract_assistant_text(payload) == "Hello from MCP."
+
+
+def test_extract_assistant_text_falls_back_to_raw_on_invalid_json():
+    from app.ceo_briefing import _extract_assistant_text
+    assert _extract_assistant_text({"text": "plain text"}) == "plain text"
+
+
+def test_extract_assistant_text_handles_none():
+    from app.ceo_briefing import _extract_assistant_text
+    assert _extract_assistant_text(None) == "No data returned."
+
+
 # ── run_aws_stage_alignment ───────────────────────────────────────────────────
 
-@patch("app.mcp_client.send_message", new_callable=AsyncMock, return_value={
-    "text": "10 total launched. 8 AWS Launched, 1 Closed Lost, 1 empty.",
-})
+import json as _json
+
+_MCP_RESPONSE = {
+    "text": _json.dumps({
+        "content": [
+            {
+                "type": "ASSISTANT_RESPONSE",
+                "content": {
+                    "text": "You have 10 total launched. 8 AWS Launched, 1 Closed Lost, 1 empty."
+                },
+            },
+            {
+                "type": "serverToolResult",
+                "content": {"result": "some tool data"},
+            },
+        ]
+    })
+}
+
+
+@patch("app.mcp_client.send_message", new_callable=AsyncMock, return_value=_MCP_RESPONSE)
 async def test_run_alignment_parses_response(mock_mcp):
     from app.ceo_briefing import run_aws_stage_alignment
     result = await run_aws_stage_alignment()
     assert result["colour"] in ("GREEN", "AMBER", "RED", "UNKNOWN")
     assert "text" in result
+    # Parsed text should contain the assistant words, not raw JSON
+    assert "Launched" in result["text"]
     mock_mcp.assert_called_once()
 
 
