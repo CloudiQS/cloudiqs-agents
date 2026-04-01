@@ -514,3 +514,88 @@ async def create_ingest_deal(payload: IngestPayload) -> Optional[str]:
     except Exception as e:
         logger.error(f"HubSpot create_ingest_deal failed: {e}")
         return None
+
+
+# ── Schema bootstrap ──────────────────────────────────────────────────────────
+
+async def ensure_properties() -> None:
+    """Create any missing HubSpot properties the bridge depends on.
+
+    Called once at bridge startup (lifespan). Uses PATCH-style upsert:
+    if the property already exists the API returns 409 which we ignore.
+    Never fails loudly — a missing property is logged as a warning only.
+
+    Properties managed here:
+      Contacts: li_action_taken (bool checkbox)
+      Deals:    sow_url (text), sow_status (enumeration)
+    """
+    headers = await _get_headers()
+    if not headers:
+        logger.warning("ensure_properties: HubSpot key not configured — skipping")
+        return
+
+    contact_props = [
+        {
+            "name": "li_action_taken",
+            "label": "LinkedIn Action Taken",
+            "type": "bool",
+            "fieldType": "booleancheckbox",
+            "groupName": "contactinformation",
+            "description": "Set by sdr-linkedin/sdr-multi-thread after LinkedIn follow-up",
+        },
+    ]
+
+    deal_props = [
+        {
+            "name": "sow_url",
+            "label": "SOW URL",
+            "type": "string",
+            "fieldType": "text",
+            "groupName": "dealinformation",
+            "description": "URL to the Statement of Work document (set by ace-sow agent)",
+        },
+        {
+            "name": "sow_status",
+            "label": "SOW Status",
+            "type": "enumeration",
+            "fieldType": "select",
+            "groupName": "dealinformation",
+            "description": "Status of the SOW (set by ace-sow agent)",
+            "options": [
+                {"label": "Draft",    "value": "Draft",    "displayOrder": 0},
+                {"label": "Sent",     "value": "Sent",     "displayOrder": 1},
+                {"label": "Signed",   "value": "Signed",   "displayOrder": 2},
+                {"label": "Rejected", "value": "Rejected", "displayOrder": 3},
+            ],
+        },
+    ]
+
+    async with httpx.AsyncClient(timeout=15) as c:
+        for obj_type, props in [("contacts", contact_props), ("deals", deal_props)]:
+            for prop in props:
+                url = f"{HUBSPOT_BASE}/crm/v3/properties/{obj_type}"
+                try:
+                    r = await c.post(url, headers=headers, json=prop)
+                    if r.status_code == 201:
+                        logger.info(
+                            "hubspot_property_created",
+                            extra={"object": obj_type, "name": prop["name"]},
+                        )
+                    elif r.status_code == 409:
+                        # Already exists — this is the happy path after first deploy
+                        pass
+                    else:
+                        logger.warning(
+                            "hubspot_property_unexpected_response",
+                            extra={
+                                "object": obj_type,
+                                "name": prop["name"],
+                                "status": r.status_code,
+                                "body": r.text[:200],
+                            },
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "hubspot_property_create_failed",
+                        extra={"object": obj_type, "name": prop["name"], "error": str(e)},
+                    )

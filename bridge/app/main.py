@@ -144,6 +144,8 @@ async def lifespan(app: FastAPI):
     global _webhook_events, _BRIDGE_API_KEY
     _webhook_events = _load_events_from_disk()
     _BRIDGE_API_KEY = _load_bridge_api_key()
+    # Ensure all required HubSpot properties exist (idempotent — safe to run every startup)
+    await hubspot.ensure_properties()
     logger.info(
         "bridge_started",
         extra={"auth_enabled": _BRIDGE_AUTH_ENABLED, "version": "7.1.0"},
