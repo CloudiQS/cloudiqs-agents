@@ -511,6 +511,134 @@ async def ace_update(request: Request):
     }
 
 
+@app.post("/ace/auto-create")
+async def ace_auto_create(request: Request):
+    """Auto-create an ACE opportunity from a HubSpot deal ID.
+
+    Called by ace-create agent or POST /webhook/hubspot when a deal reaches
+    Qualified stage. Fetches deal properties from HubSpot, validates stage is
+    qualifiedtobuy, checks for existing ace_opportunity_id to prevent duplicates,
+    then creates the ACE opportunity and writes the ID back to HubSpot.
+
+    Body:
+        hubspot_deal_id:  required — HubSpot deal ID
+        email:            optional — contact email (falls back to placeholder)
+        contact_name:     optional — contact full name
+    """
+    body = await request.json()
+    deal_id = str(body.get("hubspot_deal_id", "")).strip()
+    if not deal_id:
+        return JSONResponse(status_code=400, content={"error": "hubspot_deal_id required"})
+
+    deal = await hubspot.get_deal_details(deal_id)
+    if not deal:
+        logger.warning("ace_auto_create_deal_not_found", extra={"deal_id": deal_id})
+        return JSONResponse(status_code=404, content={"error": "deal not found in HubSpot"})
+
+    stage = deal.get("dealstage", "")
+    if stage != "qualifiedtobuy":
+        return {
+            "status": "skipped",
+            "reason": f"deal stage is '{stage}', not 'qualifiedtobuy'",
+            "deal_id": deal_id,
+        }
+
+    existing_ace_id = deal.get("ace_opportunity_id", "")
+    if existing_ace_id:
+        return {
+            "status": "skipped",
+            "reason": "ACE opportunity already exists",
+            "ace_opportunity_id": existing_ace_id,
+            "deal_id": deal_id,
+        }
+
+    # Build LeadPayload from HubSpot deal fields
+    company   = deal.get("dealname", "Unknown Company").split(" - ")[0].strip()
+    email     = body.get("email", "") or f"hubspot-{deal_id}@auto.cloudiqs.internal"
+    contact   = body.get("contact_name", "") or deal.get("dealname", "")
+    campaign  = deal.get("campaign_vertical", "msp")
+    icp_score = int(deal.get("icp_score", 0) or 0)
+    signal    = deal.get("signal", "")
+    pain      = deal.get("pain_summary", "")
+    play      = deal.get("recommended_play", "")
+
+    lead = LeadPayload(
+        email=email,
+        company=company,
+        contact=contact,
+        campaign=campaign,
+        icp_score=icp_score,
+        signal=signal,
+        pain=pain,
+        play=play,
+    )
+
+    logger.info("ace_auto_create_started", extra={"company": company, "deal_id": deal_id})
+    opp_id = await ace.create_opportunity(lead)
+
+    if opp_id:
+        await hubspot.update_deal_property(deal_id, "ace_opportunity_id", opp_id)
+        await ace_notifications.notify_created(opp_id, lead)
+        logger.info("ace_auto_create_success", extra={"opp_id": opp_id, "deal_id": deal_id})
+
+    return {
+        "status": "created" if opp_id else "failed",
+        "ace_opportunity_id": opp_id,
+        "deal_id": deal_id,
+        "company": company,
+    }
+
+
+@app.post("/webhook/hubspot")
+async def webhook_hubspot(request: Request):
+    """Receive HubSpot CRM webhook events.
+
+    Handles deal.propertyChange events. When a deal's stage changes to
+    'qualifiedtobuy', triggers ACE auto-create.
+
+    HubSpot sends an array of subscription events per request:
+    [{"subscriptionType": "deal.propertyChange",
+      "objectId": 12345,
+      "propertyName": "dealstage",
+      "propertyValue": "qualifiedtobuy"}, ...]
+
+    Returns 200 immediately (HubSpot requires fast response).
+    """
+    try:
+        events = await request.json()
+    except Exception:
+        return {"status": "ok"}
+
+    if not isinstance(events, list):
+        events = [events]
+
+    for event in events:
+        sub_type = event.get("subscriptionType", "")
+        prop     = event.get("propertyName", "")
+        value    = event.get("propertyValue", "")
+        obj_id   = str(event.get("objectId", ""))
+
+        if sub_type == "deal.propertyChange" and prop == "dealstage" and value == "qualifiedtobuy":
+            logger.info("hubspot_webhook_qualified", extra={"deal_id": obj_id})
+            # Fire and forget — do not await; webhook must return fast
+            asyncio.create_task(
+                ace_auto_create(
+                    _FakeRequest({"hubspot_deal_id": obj_id})
+                )
+            )
+
+    return {"status": "ok"}
+
+
+class _FakeRequest:
+    """Minimal Request-like object for internal ace_auto_create calls."""
+    def __init__(self, body: dict):
+        self._body = body
+
+    async def json(self) -> dict:
+        return self._body
+
+
 def _parse_mcp(result) -> str:
     """Extract and clean text from an MCP send_message response via shared parser."""
     from app.mcp_parser import parse_mcp_response
