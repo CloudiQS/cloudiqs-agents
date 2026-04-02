@@ -297,6 +297,66 @@ async def stats():
     return _stats
 
 
+@app.get("/healthcheck")
+async def healthcheck():
+    """Run scripts/healthcheck.sh and return structured JSON results.
+    Parses PASS/FAIL/WARN lines from the script output.
+    """
+    import subprocess
+    import re
+
+    script = Path(__file__).parent.parent.parent / "scripts" / "healthcheck.sh"
+    if not script.exists():
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "message": "healthcheck.sh not found"},
+        )
+
+    try:
+        result = subprocess.run(
+            ["bash", str(script)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        output = result.stdout
+
+        checks = []
+        passed = failed = warned = 0
+        for line in output.splitlines():
+            m = re.match(r"\s*(PASS|FAIL|WARN)\s+(.+)", re.sub(r"\x1b\[[0-9;]*m", "", line))
+            if m:
+                status, msg = m.group(1), m.group(2)
+                checks.append({"status": status, "message": msg})
+                if status == "PASS":
+                    passed += 1
+                elif status == "FAIL":
+                    failed += 1
+                else:
+                    warned += 1
+
+        overall = "ok" if failed == 0 else "degraded"
+        return {
+            "status": overall,
+            "passed": passed,
+            "failed": failed,
+            "warned": warned,
+            "checks": checks,
+            "time": datetime.now().isoformat(),
+        }
+    except subprocess.TimeoutExpired:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "message": "healthcheck timed out after 120s"},
+        )
+    except Exception as exc:
+        logger.error("healthcheck_error", extra={"error": str(exc)})
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "message": str(exc)},
+        )
+
+
 @app.get("/teams/test")
 async def teams_test():
     """Post a test message to all three Teams channels.

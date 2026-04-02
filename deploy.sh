@@ -74,6 +74,10 @@ else
     exit 1
 fi
 
+# Step 4: Run healthcheck (informational — never fails deploy)
+echo -e "${YELLOW}[4/4] Running healthcheck...${NC}"
+bash "$REPO_DIR/scripts/healthcheck.sh" || true
+
 echo ""
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  Deploy complete${NC}"
