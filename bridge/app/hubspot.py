@@ -645,3 +645,50 @@ async def ensure_properties() -> None:
                         "hubspot_property_create_failed",
                         extra={"object": obj_type, "prop_name": prop["name"], "error": str(e)},
                     )
+
+
+def get_contact_by_email(email: str) -> Optional[dict]:
+    """Return the first HubSpot contact matching the given email, or None."""
+    api_key = get_secret("hubspot/api-key")
+    if is_dummy(api_key):
+        return None
+    try:
+        with httpx.Client(timeout=10) as c:
+            r = c.post(
+                f"{HUBSPOT_BASE}/crm/v3/objects/contacts/search",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "filterGroups": [{"filters": [{"propertyName": "email", "operator": "EQ", "value": email}]}],
+                    "properties": ["email", "firstname", "lastname", "company"],
+                    "limit": 1,
+                },
+            )
+            r.raise_for_status()
+            results = r.json().get("results", [])
+            return results[0] if results else None
+    except Exception as exc:
+        logger.warning("hubspot_get_contact_by_email_failed", extra={"error": str(exc)})
+        return None
+
+
+def search_deals_by_company(company: str) -> list:
+    """Return HubSpot deals whose dealname or associated company contains the given name."""
+    api_key = get_secret("hubspot/api-key")
+    if is_dummy(api_key):
+        return []
+    try:
+        with httpx.Client(timeout=10) as c:
+            r = c.post(
+                f"{HUBSPOT_BASE}/crm/v3/objects/deals/search",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "filterGroups": [{"filters": [{"propertyName": "dealname", "operator": "CONTAINS_TOKEN", "value": company}]}],
+                    "properties": ["dealname", "dealstage", "amount", "ace_opportunity_id", "campaign_vertical"],
+                    "limit": 5,
+                },
+            )
+            r.raise_for_status()
+            return r.json().get("results", [])
+    except Exception as exc:
+        logger.warning("hubspot_search_deals_failed", extra={"error": str(exc)})
+        return []

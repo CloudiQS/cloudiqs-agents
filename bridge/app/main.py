@@ -1269,3 +1269,164 @@ async def ceo_briefing_get():
     """
     from app import ceo_briefing as _ceo
     return await _ceo.run_briefing(stats=_stats)
+
+
+# ── Config: Brave key ─────────────────────────────────────────────────────────
+
+@app.get("/config/brave-key")
+async def config_brave_key():
+    """Return the Brave Search API key from Secrets Manager.
+    Secret path: cloudiqs/{STACK_NAME}/brave/api-key
+    """
+    from app.config import get_secret, is_dummy
+    key = get_secret("brave/api-key")
+    if is_dummy(key):
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Brave API key not configured in Secrets Manager"},
+        )
+    return {"api_key": key}
+
+
+# ── Teams direct post endpoints (for agents that need a simple curl) ──────────
+
+@app.post("/teams/sdr")
+async def teams_post_sdr(request: Request):
+    """Post a message to the SDR alerts channel.
+    Body: {"title": "...", "body_text": "...", "facts": [...]}
+    """
+    body = await request.json()
+    ok = await teams.post_to_sdr(
+        title=body.get("title", "Alert"),
+        body_text=body.get("body_text", ""),
+        facts=body.get("facts"),
+    )
+    return {"ok": ok}
+
+
+@app.post("/teams/ace")
+async def teams_post_ace(request: Request):
+    """Post a message to the ACE updates channel.
+    Body: {"title": "...", "body_text": "...", "facts": [...]}
+    """
+    body = await request.json()
+    ok = await teams.post_to_ace(
+        title=body.get("title", "ACE Update"),
+        body_text=body.get("body_text", ""),
+        facts=body.get("facts"),
+    )
+    return {"ok": ok}
+
+
+@app.post("/teams/ceo")
+async def teams_post_ceo(request: Request):
+    """Post a message to the CEO briefing channel.
+    Body: {"title": "...", "body_text": "...", "facts": [...]}
+    """
+    body = await request.json()
+    ok = await teams.post_to_ceo(
+        title=body.get("title", "CEO Update"),
+        body_text=body.get("body_text", ""),
+        facts=body.get("facts"),
+    )
+    return {"ok": ok}
+
+
+# ── Research / knowledge store ────────────────────────────────────────────────
+# In-memory store for agent research profiles and discovery briefs.
+# On production these should be backed by S3; for now they persist for the
+# bridge lifetime (Docker restart clears them — acceptable for agent-to-agent
+# handover within a session).
+
+_research_profiles: dict = {}
+_research_briefs: dict = {}
+
+
+@app.post("/research/save")
+async def research_save(request: Request):
+    """Save a company research dossier (from research-agent).
+    Body: {"company": "acme", "profile": {...full dossier...}}
+    """
+    body = await request.json()
+    company = body.get("company", "").lower().replace(" ", "-")
+    profile = body.get("profile")
+    if not company or not profile:
+        return JSONResponse(status_code=400, content={"error": "company and profile required"})
+    _research_profiles[company] = profile
+    logger.info("research_saved", extra={"company": company})
+    return {"status": "saved", "key": f"profiles/{company}.json"}
+
+
+@app.get("/research/profile")
+async def research_profile(company: str):
+    """Return the research dossier for a company.
+    Query: ?company=acme-corp
+    """
+    key = company.lower().replace(" ", "-")
+    profile = _research_profiles.get(key)
+    if not profile:
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"No profile found for {company}"},
+        )
+    return profile
+
+
+@app.post("/research/brief")
+async def research_brief_save(request: Request):
+    """Save a discovery brief (from qualification-agent).
+    Body: {"company": "acme", "brief": "...", "hubspot_deal_id": "..."}
+    """
+    body = await request.json()
+    company = body.get("company", "").lower().replace(" ", "-")
+    brief = body.get("brief")
+    if not company or not brief:
+        return JSONResponse(status_code=400, content={"error": "company and brief required"})
+    _research_briefs[company] = {
+        "brief": brief,
+        "hubspot_deal_id": body.get("hubspot_deal_id"),
+        "saved_at": datetime.now().isoformat(),
+    }
+    logger.info("brief_saved", extra={"company": company})
+    return {"status": "saved", "key": f"briefs/{company}-discovery.json"}
+
+
+@app.get("/research/brief")
+async def research_brief_get(company: str):
+    """Return the discovery brief for a company.
+    Query: ?company=acme-corp
+    """
+    key = company.lower().replace(" ", "-")
+    brief = _research_briefs.get(key)
+    if not brief:
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"No brief found for {company}"},
+        )
+    return brief
+
+
+# ── HubSpot search convenience endpoint ──────────────────────────────────────
+
+@app.get("/hubspot/search")
+async def hubspot_search(company: str = "", email: str = ""):
+    """Search HubSpot for an existing deal by company name or email.
+    Returns first matching deal or 404.
+    Query: ?company=acme or ?email=user@acme.com
+    """
+    if not company and not email:
+        return JSONResponse(status_code=400, content={"error": "company or email required"})
+    try:
+        from app import hubspot as hs
+        if email:
+            contact = await asyncio.to_thread(hs.get_contact_by_email, email)
+            if contact:
+                return {"found": True, "contact": contact}
+        if company:
+            deals = await asyncio.to_thread(hs.search_deals_by_company, company)
+            if deals:
+                return {"found": True, "deals": deals}
+        return JSONResponse(status_code=404, content={"found": False})
+    except Exception as exc:
+        logger.warning("hubspot_search_error", extra={"error": str(exc)})
+        return JSONResponse(status_code=404, content={"found": False})

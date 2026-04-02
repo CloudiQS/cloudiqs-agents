@@ -212,8 +212,11 @@ add_job "ace-sync-afternoon" "30 14 * * 1-5" "Europe/London" "ace-sync" "$HAIKU"
 add_job "ace-hygiene-weekly" "0 6 * * 1" "Europe/London" "ace-hygiene" "$HAIKU" \
     "Weekly ACE cleanup. Find stale opportunities (no update 30+ days), missing close dates, Action Required status, approaching deadlines. Post cleanup report to Teams."
 
-add_job "ace-ao-handler-check" "0 9 * * 1-5" "Europe/London" "ace-ao-handler" "$HAIKU" \
-    "Check for inbound AWS Originated opportunities via ListEngagementInvitations. Research the company, score ICP, create HubSpot deal, accept invitation. Notify Teams."
+add_job "ace-ao-handler-morning" "0 9 * * 1-5" "Europe/London" "ace-ao-handler" "$HAIKU" \
+    "Morning check for new AWS Referrals. Query MCP for opportunities created in last 48 hours. Create HubSpot deal for each new one, fire ao_received event to trigger research pipeline."
+
+add_job "ace-ao-handler-afternoon" "0 15 * * 1-5" "Europe/London" "ace-ao-handler" "$HAIKU" \
+    "Afternoon check for new AWS Referrals. Query MCP for opportunities created in last 48 hours. Create HubSpot deal for each new one, fire ao_received event to trigger research pipeline."
 
 add_job "ace-funding-weekly" "30 8 * * 1" "Europe/London" "ace-funding" "$SONNET" \
     "Weekly funding scan. Check all Committed stage opportunities for MAP, POC, CEI eligibility via MCP. Create fund request drafts for eligible opportunities. Post to Teams."
@@ -308,3 +311,7 @@ echo ""
 echo "NOTE: ace-funding and ace-sow are event-driven but also have weekly/daily checks."
 echo "NOTE: ops-meeting-notes is event-driven only (no cron)."
 echo "NOTE: sdr-account-intel and sdr-multi-thread are event-driven only (no cron)."
+echo ""
+echo "NOTE: research-agent, outreach-composer, aws-rep-update, qualification-agent are"
+echo "  event-driven only (no cron). They poll the bridge event bus at each run."
+echo "  They are NOT registered as cron jobs — they run when triggered by events."
