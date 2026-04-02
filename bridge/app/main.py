@@ -840,15 +840,54 @@ async def webhook_instantly(request: Request):
             _webhook_events.pop(0)
         _save_events_to_disk(_webhook_events)
 
-    if event_type in ("reply", "reply_received", "responded"):
+    if event_type in ("reply", "reply_received", "responded") and reply_text:
+        # Classify via Bedrock Haiku in background — do not block webhook response
+        asyncio.create_task(_classify_and_notify(event, email, reply_text, campaign_id))
+    elif event_type in ("reply", "reply_received", "responded"):
         await teams.notify(
             f"Reply Received | {email}\n"
             f"Campaign: {campaign_id}\n"
-            f"Reply: {reply_text[:200] if reply_text else 'no text captured'}\n\n"
-            "Awaiting classification by sdr-reply-handler."
+            "No reply text captured."
         )
 
     return {"status": "received", "event_type": event_type}
+
+
+async def _classify_and_notify(event: dict, email: str, reply_text: str, campaign_id: str) -> None:
+    """Classify a reply with Bedrock and post enriched Teams notification."""
+    from app import reply_classifier
+    try:
+        classification = await reply_classifier.classify_reply(reply_text, email, campaign_id)
+        label = classification.get("classification", "unknown")
+        action = classification.get("suggested_action", "Human review required")
+        confidence = classification.get("confidence", "medium")
+        reason = classification.get("reason", "")
+
+        # Update the stored event with classification
+        async with _webhook_lock:
+            for e in _webhook_events:
+                if e is event:
+                    e["classification"] = label
+                    e["suggested_action"] = action
+                    break
+            _save_events_to_disk(_webhook_events)
+
+        # Urgency: interested/referral = high priority
+        if label in ("interested", "referral"):
+            title = f"HOT REPLY: {label.upper()} | {email}"
+        else:
+            title = f"Reply: {label} | {email}"
+
+        body = (
+            f"Campaign: {campaign_id}\n"
+            f"Classification: {label} ({confidence} confidence)\n"
+            f"Reason: {reason}\n"
+            f"Action: {action}\n\n"
+            f"Reply: {reply_text[:300]}"
+        )
+        await teams.post_to_sdr(title=title, body_text=body)
+    except Exception as exc:
+        logger.warning("classify_and_notify_failed", extra={"error": str(exc), "email": email})
 
 
 @app.get("/webhook/instantly/recent")
@@ -891,6 +930,37 @@ async def webhook_mark_processed(request: Request):
         if count:
             _save_events_to_disk(_webhook_events)
     return {"marked": count}
+
+
+@app.get("/webhook/instantly/stats")
+async def webhook_instantly_stats():
+    """Return reply classification stats for the stored events.
+
+    Aggregates classification labels so sdr-digest can report on reply quality.
+    """
+    async with _webhook_lock:
+        events = _webhook_events.copy()
+
+    reply_events = [
+        e for e in events
+        if e.get("event_type") in ("reply", "reply_received", "responded")
+    ]
+
+    counts: dict = {}
+    for e in reply_events:
+        label = e.get("classification", "unclassified")
+        counts[label] = counts.get(label, 0) + 1
+
+    total = len(reply_events)
+    interested = counts.get("interested", 0)
+    reply_rate = round(interested / total * 100, 1) if total > 0 else 0.0
+
+    return {
+        "total_replies": total,
+        "classifications": counts,
+        "interested_count": interested,
+        "interested_rate_pct": reply_rate,
+    }
 
 
 # ── Event bus ────────────────────────────────────────────────────────────────
