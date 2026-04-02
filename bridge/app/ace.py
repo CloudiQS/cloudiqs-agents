@@ -498,6 +498,41 @@ async def create_opportunity(lead_data: dict) -> Optional[str]:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# GET OPPORTUNITY STAGE
+# ══════════════════════════════════════════════════════════════════════
+
+async def get_opportunity_stage(opp_id: str) -> Optional[str]:
+    """Return the current LifeCycle.Stage for an ACE opportunity.
+
+    Args:
+        opp_id: ACE opportunity ID (e.g. "O14608392")
+
+    Returns:
+        Stage string (e.g. "Qualified", "Committed") or None on failure.
+    """
+    pc = _get_partner_central_client()
+    if pc is None:
+        return None
+
+    catalog = get_secret("partner-central/catalog") or "AWS"
+
+    try:
+        resp = pc.get_opportunity(Catalog=catalog, Identifier=opp_id)
+        stage = (
+            resp.get("LifeCycle", {}).get("Stage")
+            or resp.get("Opportunity", {}).get("LifeCycle", {}).get("Stage")
+        )
+        return stage
+    except ClientError as e:
+        error_code = e.response.get("Error", {}).get("Code", "Unknown")
+        logger.warning(f"ACE get_opportunity_stage failed for {opp_id}: [{error_code}]")
+        return None
+    except Exception as e:
+        logger.warning(f"ACE get_opportunity_stage unexpected error for {opp_id}: {e}")
+        return None
+
+
+# ══════════════════════════════════════════════════════════════════════
 # UPDATE OPPORTUNITY STAGE
 # ══════════════════════════════════════════════════════════════════════
 

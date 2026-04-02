@@ -645,6 +645,31 @@ def _parse_mcp(result) -> str:
     return parse_mcp_response(result) or "No data returned."
 
 
+@app.post("/ace/sync")
+async def ace_sync_post():
+    """Sync ACE stages into HubSpot (one-way: ACE → HubSpot).
+
+    Fetches all HubSpot deals with ace_opportunity_id, reads the current
+    stage from ACE Partner Central, and updates HubSpot where ACE is ahead.
+    Never updates ACE from HubSpot — ACE changes require human review.
+
+    Called by ace-sync agent every 2 hours.
+    """
+    from app import ace_sync
+    logger.info("ace_sync_started")
+    data = await ace_sync.run_sync()
+    await ace_sync.post_sync_to_teams(data)
+    logger.info("ace_sync_complete", extra={"synced": data.get("synced", 0)})
+    return data
+
+
+@app.get("/ace/sync")
+async def ace_sync_get():
+    """GET version of ACE sync — returns the same data without posting to Teams."""
+    from app import ace_sync
+    return await ace_sync.run_sync()
+
+
 @app.post("/ace/hygiene")
 async def ace_hygiene_post():
     """Run ACE pipeline hygiene check via Partner Central MCP.

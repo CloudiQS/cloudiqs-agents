@@ -250,6 +250,52 @@ async def search_deals(filters: dict, limit: int = 20) -> list:
         return []
 
 
+async def get_deals_with_ace_id(limit: int = 100) -> list:
+    """Return all open HubSpot deals that have an ace_opportunity_id set.
+
+    Used by ace_sync to find deals that need stage comparison against ACE.
+
+    Returns:
+        List of deal dicts with deal_id, dealstage, ace_opportunity_id, dealname.
+    """
+    headers = await _get_headers()
+    if not headers:
+        return []
+
+    properties = ["dealname", "dealstage", "ace_opportunity_id", "campaign_vertical"]
+
+    @_retry
+    async def _call():
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.post(
+                f"{HUBSPOT_BASE}/crm/v3/objects/deals/search",
+                headers=headers,
+                json={
+                    "filterGroups": [{"filters": [
+                        {"propertyName": "ace_opportunity_id", "operator": "HAS_PROPERTY"},
+                    ]}],
+                    "properties": properties,
+                    "limit": min(limit, 100),
+                },
+            )
+            r.raise_for_status()
+            results = r.json().get("results", [])
+            return [
+                {
+                    "deal_id": d["id"],
+                    **{k: d.get("properties", {}).get(k, "") for k in properties},
+                }
+                for d in results
+                if d.get("properties", {}).get("ace_opportunity_id", "")
+            ]
+
+    try:
+        return await _call()
+    except Exception as e:
+        logger.error(f"HubSpot get_deals_with_ace_id failed: {e}")
+        return []
+
+
 async def get_deal_details(deal_id: str) -> Optional[dict]:
     """Fetch all properties for a specific deal.
 
