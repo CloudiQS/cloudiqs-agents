@@ -517,69 +517,36 @@ def _parse_mcp(result) -> str:
     return parse_mcp_response(result) or "No data returned."
 
 
-async def _run_ace_hygiene() -> dict:
-    """Run 3 ACE hygiene MCP queries concurrently and return parsed text results.
-    Shared by POST /ace/hygiene and GET /ace/hygiene.
-    """
-    from app import mcp_client
-
-    queries = {
-        "action_required": (
-            "List all opportunities with Action Required status. "
-            "For each show opportunity ID, company name, and what action is needed."
-        ),
-        "stale_launched": (
-            "List all opportunities in Launched stage that have not been updated in 30 days. "
-            "Show opportunity ID, company name, and last update date."
-        ),
-        "funding_eligible": (
-            "Which of my opportunities at Business Validation or Committed stage are eligible "
-            "for funding programs such as MAP, POC credits, or CEI? "
-            "Show opportunity ID, company name, program name, and estimated amount."
-        ),
-    }
-
-    results = await asyncio.gather(
-        *[mcp_client.send_message(q, catalog="AWS") for q in queries.values()],
-        return_exceptions=True,
-    )
-
-    report = {}
-    for key, result in zip(queries.keys(), results):
-        if isinstance(result, Exception) or result is None:
-            logger.warning(f"ace_hygiene_mcp_failed", extra={"section": key})
-            report[key] = "⚠️ MCP query failed — check Partner Central connection."
-        else:
-            report[key] = _parse_mcp(result)
-
-    return report
-
-
-
 @app.post("/ace/hygiene")
 async def ace_hygiene_post():
     """Run ACE pipeline hygiene check via Partner Central MCP.
 
-    Queries (run concurrently):
-      1. Opportunities with Action Required status
-      2. Stale Launched opportunities (30+ days no update)
-      3. Funding eligible at Business Validation / Committed stage
+    6 queries run concurrently (asyncio.gather):
+      action_required, stale_launched, funding_eligible,
+      aws_stage, past_close_dates, cosell
 
-    Parses MCP text responses, posts a formatted MessageCard to Teams,
-    and returns the plain-text sections in the API response.
+    Returns health score (0-10), prioritised action plan, and full sections.
+    Posts a formatted card to the ACE Teams channel.
 
     Called by ace-hygiene agent on its Monday 06:00 schedule.
     """
+    from app import ace_hygiene
     logger.info("ace_hygiene_started")
-    report = await _run_ace_hygiene()
-    await ace_notifications.notify_hygiene(report)
-    logger.info("ace_hygiene_complete")
+    data = await ace_hygiene.run_hygiene()
+    await ace_hygiene.post_hygiene_to_teams(data)
+    logger.info("ace_hygiene_complete", extra={"health_score": data.get("health_score")})
     return {
-        "status": "complete",
-        "date": datetime.now().strftime("%Y-%m-%d"),
-        "action_required": report.get("action_required", ""),
-        "stale_launched": report.get("stale_launched", ""),
-        "funding_eligible": report.get("funding_eligible", ""),
+        "status":           "complete",
+        "date":             data.get("date", ""),
+        "health_score":     data.get("health_score", 0),
+        "health_label":     data.get("health_label", ""),
+        "action_plan":      data.get("action_plan", []),
+        "action_required":  data.get("action_required", ""),
+        "stale_launched":   data.get("stale_launched", ""),
+        "funding_eligible": data.get("funding_eligible", ""),
+        "aws_stage":        data.get("aws_stage", ""),
+        "past_close_dates": data.get("past_close_dates", ""),
+        "cosell":           data.get("cosell", ""),
     }
 
 
