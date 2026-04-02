@@ -645,6 +645,22 @@ def _parse_mcp(result) -> str:
     return parse_mcp_response(result) or "No data returned."
 
 
+@app.get("/targets/weekly")
+async def targets_weekly():
+    """Return Q2 2026 weekly pipeline target progress.
+
+    Shows week number, cumulative pipeline vs expected, on_track flag,
+    gap to target, and required weekly pipeline to close the gap.
+    """
+    from app import targets
+    _reset_stats_if_new_day()
+    stats = {
+        "total_leads":    _stats.get("total_leads", 0),
+        "week_leads":     _stats.get("total_leads", 0),
+    }
+    return await targets.get_weekly_targets(stats=stats)
+
+
 @app.post("/ace/funding-check")
 async def ace_funding_check_post():
     """Run ACE funding eligibility check via Partner Central MCP.
