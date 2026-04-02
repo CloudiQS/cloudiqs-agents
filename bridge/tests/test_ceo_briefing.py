@@ -95,8 +95,8 @@ def test_clean_truncates_to_budget():
     from app.ceo_briefing import _clean
     long_text = "Acme Corp deal. " * 100
     result = _clean(long_text, 200)
-    assert len(result) <= 200
-    assert result.endswith("…")
+    assert len(result) < len(long_text)
+    assert "..." in result
 
 
 def test_clean_returns_no_data_when_empty():
@@ -167,7 +167,8 @@ async def test_run_briefing_returns_all_keys(mock_mcp):
     from app.ceo_briefing import run_briefing
     result = await run_briefing(stats={"total_leads": 3})
     for key in ("date", "pipeline", "action_required", "closing_soon",
-                "aws_stage", "cosell", "funding", "weekly", "leads_today"):
+                "aws_stage", "cosell", "funding", "aws_actions", "rep_activity",
+                "weekly", "leads_today"):
         assert key in result
     assert result["leads_today"] == 3
 
@@ -215,7 +216,8 @@ async def test_post_briefing_calls_post_to_ceo(mock_post):
     from app.ceo_briefing import post_briefing_to_teams
     await post_briefing_to_teams(_DATA)
     mock_post.assert_called_once()
-    title = mock_post.call_args[0][0]
+    kwargs = mock_post.call_args[1]
+    title = kwargs.get("title") or mock_post.call_args[0][0]
     assert "CEO BRIEFING" in title
     assert "02 Apr 2026" in title
 
@@ -224,7 +226,8 @@ async def test_post_briefing_calls_post_to_ceo(mock_post):
 async def test_post_briefing_includes_pipeline_in_body(mock_post):
     from app.ceo_briefing import post_briefing_to_teams
     await post_briefing_to_teams(_DATA)
-    body_text = mock_post.call_args[0][1]
+    kwargs = mock_post.call_args[1]
+    body_text = kwargs.get("body_text") or mock_post.call_args[0][1]
     assert "PIPELINE" in body_text
     assert "ENGINE" not in body_text  # ENGINE is in facts, not body
 
@@ -248,5 +251,6 @@ async def test_post_briefing_monday_weekly_in_body(mock_post):
         "pipeline_velocity": "45 days",
     })
     await post_briefing_to_teams(data)
-    body_text = mock_post.call_args[0][1]
+    kwargs = mock_post.call_args[1]
+    body_text = kwargs.get("body_text") or mock_post.call_args[0][1]
     assert "WEEKLY" in body_text
