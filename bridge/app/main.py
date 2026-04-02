@@ -893,6 +893,76 @@ async def webhook_mark_processed(request: Request):
     return {"marked": count}
 
 
+# ── Event bus ────────────────────────────────────────────────────────────────
+
+@app.post("/event")
+async def event_publish(request: Request):
+    """Publish an event to the agent event bus.
+
+    SDR agents POST this after lead creation, ACE agents after opportunity
+    creation, reply handler after classification, etc.
+
+    Body:
+        event_type: str  — e.g. "lead.created", "deal.qualified"
+        agent:      str  — source agent name (e.g. "sdr-vmware")
+        payload:    dict — event-specific data
+
+    Returns the saved event with id and timestamp.
+    """
+    from app import events as ev
+    body = await request.json()
+    event_type = body.get("event_type", "")
+    agent      = body.get("agent", "unknown")
+    payload    = body.get("payload", {})
+
+    if not event_type:
+        return JSONResponse(status_code=400, content={"error": "event_type required"})
+
+    event = await ev.publish(event_type, agent, payload)
+    return {"status": "published", "event": event}
+
+
+@app.get("/events/recent")
+async def events_recent(
+    event_type: str = "",
+    agent: str = "",
+    limit: int = 50,
+):
+    """Return recent bus events, newest first.
+
+    Query params:
+        event_type: filter by exact event type
+        agent:      filter by source agent
+        limit:      max results (default 50, max 200)
+    """
+    from app import events as ev
+    items = await ev.get_recent(
+        event_type=event_type or None,
+        agent=agent or None,
+        limit=limit,
+    )
+    return {"events": items, "total": len(items)}
+
+
+@app.post("/event/replay")
+async def event_replay(request: Request):
+    """Look up a specific event by ID.
+
+    Body:
+        event_id: str — UUID of the event to retrieve
+    """
+    from app import events as ev
+    body = await request.json()
+    event_id = body.get("event_id", "")
+    if not event_id:
+        return JSONResponse(status_code=400, content={"error": "event_id required"})
+
+    event = await ev.replay(event_id)
+    if not event:
+        return JSONResponse(status_code=404, content={"error": "event not found"})
+    return event
+
+
 # ── Config endpoints ──────────────────────────────────────────────────────────
 
 @app.get("/config/companies-house-key")
