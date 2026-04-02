@@ -511,6 +511,27 @@ async def ace_update(request: Request):
     }
 
 
+@app.post("/ace/update-opportunity")
+async def ace_update_opportunity(request: Request):
+    """Update free-form fields on an ACE opportunity. Alias for /ace/update.
+
+    Body:
+        ace_opportunity_id: required — ACE opportunity ID (e.g. "O14608392")
+        customer_business_problem: str (20-2000 chars)
+        website: str (e.g. "shadagro.com")
+        national_security: "Yes" | "No"
+
+    Examples:
+        Fix ShadAgro Action Required (O14608392):
+        {
+          "ace_opportunity_id": "O14608392",
+          "customer_business_problem": "ShadAgro requires cloud migration ...",
+          "website": "shadagro.com"
+        }
+    """
+    return await ace_update(request)
+
+
 @app.post("/ace/auto-create")
 async def ace_auto_create(request: Request):
     """Auto-create an ACE opportunity from a HubSpot deal ID.
