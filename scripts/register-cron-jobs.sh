@@ -9,10 +9,12 @@ RED='\033[0;31m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-# Models (EU regional inference profiles)
-NOVA="amazon-bedrock/eu.amazon.nova-lite-v1:0"
-HAIKU="amazon-bedrock/eu.anthropic.claude-haiku-4-5-20251001-v1:0"
-SONNET="amazon-bedrock/eu.anthropic.claude-sonnet-4-20250514-v1:0"
+# Models — MUST use global. prefix. OpenClaw has a confirmed bug (GitHub #55642)
+# that strips the eu./us./jp. prefix before sending to Bedrock, causing
+# "invalid model identifier" errors. global. prefix is handled differently and works.
+NOVA="global.amazon.nova-lite-v1:0"
+HAIKU="global.anthropic.claude-haiku-4-5-20251001-v1:0"
+SONNET="global.anthropic.claude-sonnet-4-20250514-v1:0"
 
 echo -e "${YELLOW}[0/3] Preflight: verifying agents are registered...${NC}"
 AGENT_COUNT=$(openclaw agents list 2>/dev/null | grep -c "." || echo "0")
