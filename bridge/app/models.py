@@ -17,6 +17,7 @@ class LeadPayload(BaseModel):
     contact: str = ""
     job_title: str = ""
     phone: str = ""
+    company_phone: str = ""
     linkedin_url: str = ""
 
     # Company data

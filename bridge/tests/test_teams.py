@@ -139,15 +139,17 @@ async def test_post_to_ace_falls_back_when_key_missing(mock_post, mock_secret):
 
 # ── notify_lead routes to SDR ─────────────────────────────────────────────────
 
-@patch("app.teams.post_to_sdr", new_callable=AsyncMock, return_value=True)
-async def test_notify_lead_routes_to_sdr(mock_sdr):
+@patch("app.teams._post_raw", new_callable=AsyncMock, return_value=True)
+async def test_notify_lead_routes_to_sdr(mock_raw):
     from app.teams import notify_lead
     await notify_lead({"company": "Acme", "campaign": "msp", "icp_score": 7})
-    mock_sdr.assert_called_once()
+    mock_raw.assert_called_once()
+    assert mock_raw.call_args[0][1] == "teams/webhook-url"
 
 
-@patch("app.teams._post", new_callable=AsyncMock, return_value=True)
-async def test_notify_lead_builds_facts(mock_post):
+@patch("app.teams._post_raw", new_callable=AsyncMock, return_value=True)
+async def test_notify_lead_builds_card(mock_raw):
+    import json
     from app.teams import notify_lead
     await notify_lead({
         "company": "Acme Ltd", "campaign": "msp", "icp_score": 9,
@@ -155,32 +157,33 @@ async def test_notify_lead_builds_facts(mock_post):
         "signal": "Hiring cloud engineers", "pain": "VMware exit",
         "hubspot_deal_id": "hs-123",
     })
-    # post was called with title, body_text, facts, webhook_key
-    args = mock_post.call_args
-    title = args[0][0]
-    facts = args[0][2]
-    assert "ICP 9/10" in title
-    assert "MSP" in title
-    assert any(f["title"] == "Company" and f["value"] == "Acme Ltd" for f in facts)
-    assert any(f["title"] == "Signal" for f in facts)
+    card_json = json.dumps(mock_raw.call_args[0][0])
+    assert "ICP 9/10" in card_json
+    assert "MSP" in card_json
+    assert "Acme Ltd" in card_json
+    assert "Hiring cloud engineers" in card_json
+    # ICP 9 -> "good" style header
+    assert "good" in card_json
 
 
-@patch("app.teams._post", new_callable=AsyncMock, return_value=True)
-async def test_notify_lead_optional_fields(mock_post):
+@patch("app.teams._post_raw", new_callable=AsyncMock, return_value=True)
+async def test_notify_lead_optional_fields(mock_raw):
+    import json
     from app.teams import notify_lead
     await notify_lead({
         "company": "Acme", "campaign": "smb", "icp_score": 6,
-        "website": "acme.com", "employees": 200,
+        "website": "https://acme.com", "employees": 200,
         "location": "Manchester", "companies_house_number": "12345678",
         "linkedin_url": "https://linkedin.com/company/acme",
+        "phone": "07700900000",
     })
-    facts = mock_post.call_args[0][2]
-    titles = [f["title"] for f in facts]
-    assert "Website" in titles
-    assert "Employees" in titles
-    assert "Location" in titles
-    assert "Companies House" in titles
-    assert "LinkedIn" in titles
+    card_json = json.dumps(mock_raw.call_args[0][0])
+    assert "acme.com" in card_json
+    assert "200" in card_json
+    assert "Manchester" in card_json
+    assert "12345678" in card_json
+    assert "linkedin.com" in card_json
+    assert "07700900000" in card_json
 
 
 @patch("app.teams._post", new_callable=AsyncMock, return_value=True)

@@ -55,7 +55,7 @@ def _section_header(text: str) -> dict:
 # ── Lead notification card ────────────────────────────────────────────────────
 
 def build_lead_card(lead_data: dict) -> dict:
-    """Build a premium Adaptive Card v1.4 for a new lead notification.
+    """Build an Adaptive Card v1.4 lead notification — plain TextBlocks with bold labels.
 
     Returns the full Power Automate webhook payload (type: message wrapper).
     """
@@ -65,6 +65,7 @@ def build_lead_card(lead_data: dict) -> dict:
     contact      = lead_data.get("contact", "")
     job_title    = lead_data.get("job_title", "")
     email_addr   = lead_data.get("email", "")
+    phone        = lead_data.get("phone", "") or lead_data.get("company_phone", "")
     linkedin     = lead_data.get("linkedin_url", "")
     website      = lead_data.get("website", "")
     employees    = lead_data.get("employees")
@@ -78,161 +79,82 @@ def build_lead_card(lead_data: dict) -> dict:
     instantly_id = lead_data.get("instantly_lead_id", "")
     deal_name    = lead_data.get("deal_name", "")
 
-    accent_style = _icp_style(icp)
+    body: list[dict] = []
 
-    body = []
-
-    # ── Header accent strip ──────────────────────────────────────────────────
+    # ── ICP-coloured header ───────────────────────────────────────────────────
     body.append({
         "type": "Container",
-        "style": accent_style,
+        "style": _icp_style(icp),
         "bleed": True,
         "items": [{
-            "type": "ColumnSet",
-            "columns": [
-                {
-                    "type": "Column",
-                    "width": "auto",
-                    "items": [{
-                        "type": "TextBlock",
-                        "text": f"ICP {icp}/10",
-                        "weight": "bolder",
-                        "size": "large",
-                        "color": "light",
-                    }],
-                },
-                {
-                    "type": "Column",
-                    "width": "stretch",
-                    "items": [{
-                        "type": "TextBlock",
-                        "text": f"{campaign} CAMPAIGN" if campaign else "LEAD",
-                        "weight": "bolder",
-                        "horizontalAlignment": "right",
-                        "color": "light",
-                    }],
-                },
-            ],
+            "type": "TextBlock",
+            "text": f"New Lead | ICP {icp}/10 | {campaign}",
+            "weight": "bolder",
+            "size": "large",
+            "color": "light",
         }],
     })
 
-    # ── Company section ──────────────────────────────────────────────────────
-    company_items = [_section_header("COMPANY")]
+    def tb(text: str, **kw) -> dict:
+        return {"type": "TextBlock", "text": text, "wrap": True, **kw}
 
-    col_left = [{"type": "TextBlock", "text": company, "weight": "bolder", "size": "medium"}]
-    col_right: list[dict] = []
-
-    if location:
-        col_left.append({"type": "TextBlock", "text": location, "spacing": "none", "isSubtle": True})
-    if employees:
-        col_right.append({"type": "TextBlock", "text": f"{employees} employees", "horizontalAlignment": "right"})
-    if ch_number:
-        col_right.append({"type": "TextBlock", "text": f"CH: {ch_number}", "spacing": "none", "isSubtle": True, "horizontalAlignment": "right"})
-
-    columns = [{"type": "Column", "width": "stretch", "items": col_left}]
-    if col_right:
-        columns.append({"type": "Column", "width": "auto", "items": col_right})
-
-    company_items.append({"type": "ColumnSet", "columns": columns})
+    # ── Company block ─────────────────────────────────────────────────────────
+    body.append(tb(f"**Company:** {company}"))
 
     if website:
-        domain = website.replace("https://", "").replace("http://", "").rstrip("/")
-        company_items.append({
-            "type": "TextBlock",
-            "text": f"[{domain}](https://{domain})",
-            "spacing": "none",
-            "isSubtle": True,
-        })
+        url    = website if website.startswith("http") else f"https://{website}"
+        domain = url.replace("https://", "").replace("http://", "").rstrip("/")
+        body.append(tb(f"**Website:** [{domain}]({url})"))
 
-    body.append({"type": "Container", "spacing": "medium", "items": company_items})
+    if employees:
+        body.append(tb(f"**Employees:** {employees}"))
 
-    # ── Decision maker section ────────────────────────────────────────────────
-    if contact or email_addr:
+    if location and location not in ("GB", ""):
+        body.append(tb(f"**Location:** {location}"))
+
+    if ch_number:
+        ch_url = f"https://find-and-update.company-information.service.gov.uk/company/{ch_number}"
+        body.append(tb(f"**Companies House:** [{ch_number}]({ch_url})"))
+
+    # ── Contact block ─────────────────────────────────────────────────────────
+    body.append(_sep())
+
+    primary = f"{contact} | {job_title}" if (contact and job_title) else contact or ""
+    if primary:
+        body.append(tb(f"**PRIMARY:** {primary}"))
+
+    if email_addr:
+        body.append(tb(f"**Email:** [{email_addr}](mailto:{email_addr})"))
+
+    if phone:
+        body.append(tb(f"**Phone:** [{phone}](tel:{phone})"))
+
+    if linkedin:
+        body.append(tb(f"**LinkedIn:** [{linkedin}]({linkedin})"))
+
+    # ── Why block ─────────────────────────────────────────────────────────────
+    if signal or pain or play:
         body.append(_sep())
-        dm_items = [_section_header("DECISION MAKER")]
-
-        if contact or job_title:
-            dm_cols = [{"type": "Column", "width": "stretch", "items": [
-                {"type": "TextBlock", "text": contact or "Unknown", "weight": "bolder"},
-            ]}]
-            if job_title:
-                dm_cols[0]["items"].append({"type": "TextBlock", "text": job_title, "spacing": "none", "isSubtle": True})
-            dm_items.append({"type": "ColumnSet", "columns": dm_cols})
-
-        if email_addr:
-            dm_items.append({
-                "type": "TextBlock",
-                "text": f"[{email_addr}](mailto:{email_addr})",
-                "spacing": "none",
-            })
-        if linkedin:
-            dm_items.append({
-                "type": "TextBlock",
-                "text": f"[LinkedIn Profile]({linkedin})",
-                "spacing": "none",
-                "isSubtle": True,
-            })
-
-        body.append({"type": "Container", "items": dm_items})
-
-    # ── Why this lead ────────────────────────────────────────────────────────
-    if signal or pain:
-        body.append(_sep())
-        why_facts = []
         if signal:
-            why_facts.append({"title": "Signal", "value": signal})
+            body.append(tb(f"**Signal:** {signal}"))
         if pain:
-            why_facts.append({"title": "Pain", "value": pain})
-        body.append({
-            "type": "Container",
-            "items": [
-                _section_header("WHY THIS LEAD"),
-                {"type": "FactSet", "facts": why_facts},
-            ],
-        })
+            body.append(tb(f"**Pain:** {pain}"))
+        if play:
+            body.append(tb(f"**Play:** {play}"))
 
-    # ── Our play ─────────────────────────────────────────────────────────────
-    if play:
-        body.append(_sep())
-        body.append({
-            "type": "Container",
-            "style": "emphasis",
-            "items": [
-                _section_header("OUR PLAY"),
-                {"type": "TextBlock", "text": play, "wrap": True},
-            ],
-        })
-
-    # ── Footer ───────────────────────────────────────────────────────────────
-    footer_lines = []
+    # ── CRM footer ────────────────────────────────────────────────────────────
     if deal_name:
-        footer_lines.append(deal_name)
-    crm_parts = []
+        body.append(_sep())
+        body.append(tb(f"**Deal:** {deal_name}"))
+
+    crm_parts: list[str] = []
     if hubspot_con:
         crm_parts.append(f"HubSpot: {hubspot_con}")
     if hubspot_deal:
         crm_parts.append(f"Deal: {hubspot_deal}")
     crm_parts.append(f"Instantly: {'enrolled' if instantly_id else 'skipped'}")
-    footer_lines.append(" | ".join(crm_parts))
 
-    footer_items: list[dict] = []
-    for i, line in enumerate(footer_lines):
-        footer_items.append({
-            "type": "TextBlock",
-            "text": line,
-            "isSubtle": True,
-            "size": "small",
-            "spacing": "none" if i > 0 else "small",
-            "wrap": True,
-        })
-
-    body.append({
-        "type": "Container",
-        "style": "default",
-        "spacing": "small",
-        "separator": True,
-        "items": footer_items,
-    })
+    body.append(tb(" | ".join(crm_parts), isSubtle=True, size="small", separator=True, spacing="small"))
 
     return _wrap_card(body)
 
@@ -508,54 +430,20 @@ async def notify(text: str) -> bool:
 # ── Rich lead card ────────────────────────────────────────────────────────────
 
 async def notify_lead(lead_data: dict) -> bool:
-    """Send a lead notification to the SDR channel via post_to_sdr."""
-    company    = lead_data.get("company", "Unknown")
-    campaign   = (lead_data.get("campaign") or "").upper()
-    icp        = int(lead_data.get("icp_score") or 0)
-    contact    = lead_data.get("contact", "")
-    job_title  = lead_data.get("job_title", "")
-    email_addr = lead_data.get("email", "")
-    signal     = lead_data.get("signal", "")
-    pain       = lead_data.get("pain", "")
-    play       = lead_data.get("play", "")
-    website    = lead_data.get("website", "")
-    employees  = lead_data.get("employees")
-    location   = lead_data.get("location", "")
-    ch_number  = lead_data.get("companies_house_number", "")
-    linkedin   = lead_data.get("linkedin_url", "")
+    """Send a lead notification card to the SDR channel."""
+    company  = lead_data.get("company", "Unknown")
+    icp      = int(lead_data.get("icp_score") or 0)
+    campaign = (lead_data.get("campaign") or "").upper()
 
-    title = f"New Lead | ICP {icp}/10 | {campaign}"
+    card = build_lead_card(lead_data)
+    ok = await _post_raw(card, "teams/webhook-url")
+    if ok:
+        logger.info("teams_lead_card_sent", extra={"company": company, "icp": icp, "campaign": campaign})
+        return True
 
-    facts: list[dict] = [{"title": "Company", "value": company}]
-    if contact:
-        facts.append({"title": "Contact", "value": contact})
-    if job_title:
-        facts.append({"title": "Title", "value": job_title})
-    if email_addr:
-        facts.append({"title": "Email", "value": email_addr})
-    if website:
-        facts.append({"title": "Website", "value": website})
-    if employees:
-        facts.append({"title": "Employees", "value": str(employees)})
-    if location:
-        facts.append({"title": "Location", "value": location})
-    if ch_number:
-        facts.append({"title": "Companies House", "value": ch_number})
-    if linkedin:
-        facts.append({"title": "LinkedIn", "value": linkedin})
-    if signal:
-        facts.append({"title": "Signal", "value": signal})
-    if pain:
-        facts.append({"title": "Pain", "value": pain})
-    if play:
-        facts.append({"title": "Play", "value": play})
-
-    body_parts = []
-    if signal:
-        body_parts.append(f"Signal: {signal}")
-    if pain:
-        body_parts.append(f"Pain: {pain}")
-    body_text = "\n".join(body_parts)
-
-    logger.info("teams_lead_card_sent", extra={"company": company, "icp": icp, "campaign": campaign})
-    return await post_to_sdr(title, body_text, facts=facts)
+    # Fallback to simple text
+    title  = f"New Lead | ICP {icp}/10 | {campaign}"
+    simple = _build_simple(title, company)
+    ok = await _post_raw(simple, "teams/webhook-url")
+    logger.info("teams_lead_card_fallback", extra={"company": company})
+    return ok
