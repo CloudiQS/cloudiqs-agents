@@ -140,10 +140,11 @@ def _clean(text: str, budget: int) -> str:
 async def _mcp(query: str) -> str:
     """Run one Partner Central MCP query. Returns fallback string on failure."""
     from app import mcp_client
+    from app.mcp_parser import parse_mcp_response
     try:
         result = await mcp_client.send_message(query, catalog="AWS")
-        text = _extract_assistant_text(result)
-        return _strip_narrative(text) if text else "No data."
+        text = parse_mcp_response(result)
+        return text if text else "No data."
     except Exception as exc:
         logger.warning(
             "ceo_briefing_mcp_query_failed",

@@ -512,16 +512,9 @@ async def ace_update(request: Request):
 
 
 def _parse_mcp(result) -> str:
-    """Extract and clean text from an MCP send_message response.
-
-    Delegates to ceo_briefing._extract_assistant_text for JSON-RPC parsing,
-    then strips MCP narrative sentences via ceo_briefing._strip_narrative.
-    """
-    from app.ceo_briefing import _extract_assistant_text, _strip_narrative
-    text = _extract_assistant_text(result)
-    if not text:
-        return "No data returned."
-    return _strip_narrative(text) or "No data returned."
+    """Extract and clean text from an MCP send_message response via shared parser."""
+    from app.mcp_parser import parse_mcp_response
+    return parse_mcp_response(result) or "No data returned."
 
 
 async def _run_ace_hygiene() -> dict:
