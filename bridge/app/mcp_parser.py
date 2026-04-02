@@ -126,6 +126,13 @@ def truncate(text: str, max_chars: int = 800) -> str:
     return cut.rstrip() + "\n... [full report via API]"
 
 
+def strip_pipe_tables(text: str) -> str:
+    """Remove markdown pipe-table rows (lines that start and end with |)."""
+    lines = text.split("\n")
+    clean = [line for line in lines if not line.strip().startswith("|")]
+    return "\n".join(clean).strip()
+
+
 def extract_facts(text: str) -> list:
     """Extract key:value pairs from text for FactSet display.
 

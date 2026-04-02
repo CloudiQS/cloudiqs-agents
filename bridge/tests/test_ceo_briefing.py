@@ -200,7 +200,7 @@ async def test_run_briefing_non_monday_empty_weekly(mock_mcp):
 _DATA = {
     "date": "02 Apr 2026",
     "is_monday": False,
-    "pipeline": "Prospect: 8 | Qualified: 4",
+    "pipeline": "Prospect: 8\nQualified: 4",
     "action_required": "Acme: submit win wire",
     "closing_soon": "Acme closes 10 Apr",
     "aws_stage": "8 confirmed, 1 Closed Lost",
@@ -211,39 +211,35 @@ _DATA = {
 }
 
 
-@patch("app.teams.post_to_ceo", new_callable=AsyncMock, return_value=True)
-async def test_post_briefing_calls_post_to_ceo(mock_post):
+@patch("app.teams._post_raw", new_callable=AsyncMock, return_value=True)
+async def test_post_briefing_sends_adaptive_card(mock_raw):
     from app.ceo_briefing import post_briefing_to_teams
     await post_briefing_to_teams(_DATA)
-    mock_post.assert_called_once()
-    kwargs = mock_post.call_args[1]
-    title = kwargs.get("title") or mock_post.call_args[0][0]
-    assert "CEO BRIEFING" in title
-    assert "02 Apr 2026" in title
+    mock_raw.assert_called_once()
+    card_json = json.dumps(mock_raw.call_args[0][0])
+    assert "CEO BRIEFING" in card_json
+    assert "02 Apr 2026" in card_json
 
 
-@patch("app.teams.post_to_ceo", new_callable=AsyncMock, return_value=True)
-async def test_post_briefing_includes_pipeline_in_body(mock_post):
+@patch("app.teams._post_raw", new_callable=AsyncMock, return_value=True)
+async def test_post_briefing_includes_pipeline(mock_raw):
     from app.ceo_briefing import post_briefing_to_teams
     await post_briefing_to_teams(_DATA)
-    kwargs = mock_post.call_args[1]
-    body_text = kwargs.get("body_text") or mock_post.call_args[0][1]
-    assert "PIPELINE" in body_text
-    assert "ENGINE" not in body_text  # ENGINE is in facts, not body
+    card_json = json.dumps(mock_raw.call_args[0][0])
+    assert "PIPELINE" in card_json
 
 
-@patch("app.teams.post_to_ceo", new_callable=AsyncMock, return_value=True)
-async def test_post_briefing_engine_in_facts(mock_post):
+@patch("app.teams._post_raw", new_callable=AsyncMock, return_value=True)
+async def test_post_briefing_leads_today_in_card(mock_raw):
     from app.ceo_briefing import post_briefing_to_teams
     await post_briefing_to_teams(_DATA)
-    # facts is passed as keyword arg
-    kwargs = mock_post.call_args[1]
-    facts = kwargs.get("facts") or (mock_post.call_args[0][2] if len(mock_post.call_args[0]) > 2 else [])
-    assert any(f["title"] == "Leads today" and f["value"] == "12" for f in facts)
+    card_json = json.dumps(mock_raw.call_args[0][0])
+    assert "Leads today" in card_json
+    assert "12" in card_json
 
 
-@patch("app.teams.post_to_ceo", new_callable=AsyncMock, return_value=True)
-async def test_post_briefing_monday_weekly_in_body(mock_post):
+@patch("app.teams._post_raw", new_callable=AsyncMock, return_value=True)
+async def test_post_briefing_monday_weekly_in_card(mock_raw):
     from app.ceo_briefing import post_briefing_to_teams
     data = dict(_DATA, is_monday=True, weekly={
         "close_date_cleanup": "3 overdue",
@@ -251,6 +247,5 @@ async def test_post_briefing_monday_weekly_in_body(mock_post):
         "pipeline_velocity": "45 days",
     })
     await post_briefing_to_teams(data)
-    kwargs = mock_post.call_args[1]
-    body_text = kwargs.get("body_text") or mock_post.call_args[0][1]
-    assert "WEEKLY" in body_text
+    card_json = json.dumps(mock_raw.call_args[0][0])
+    assert "WEEKLY" in card_json

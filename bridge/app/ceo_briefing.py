@@ -28,7 +28,7 @@ from datetime import datetime
 from typing import Optional
 
 from app import teams
-from app.mcp_parser import parse_mcp_response, strip_narrative, truncate, extract_facts
+from app.mcp_parser import parse_mcp_response, strip_narrative, strip_pipe_tables, truncate, extract_facts
 
 logger = logging.getLogger("bridge")
 
@@ -64,8 +64,9 @@ def _strip_narrative(text: str) -> str:
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _clean(text: str, budget: int) -> str:
-    """Strip narrative then truncate to budget chars."""
+    """Strip narrative and pipe tables, then truncate to budget chars."""
     cleaned = strip_narrative(text) if text else ""
+    cleaned = strip_pipe_tables(cleaned)
     if not cleaned:
         return "No data."
     return truncate(cleaned, budget)
@@ -201,7 +202,7 @@ async def run_briefing(stats: Optional[dict] = None) -> dict:
 # ── Teams card formatter ──────────────────────────────────────────────────────
 
 async def post_briefing_to_teams(data: dict) -> bool:
-    """Format briefing data and post to CEO channel via teams.post_to_ceo."""
+    """Build a multi-section Adaptive Card and post to CEO channel."""
     date        = data.get("date", datetime.now().strftime("%d %b %Y"))
     is_monday   = data.get("is_monday", False)
     weekly      = data.get("weekly", {})
@@ -209,61 +210,79 @@ async def post_briefing_to_teams(data: dict) -> bool:
 
     title = f"CLOUDIQS CEO BRIEFING — {date}"
 
-    # Facts row
-    facts = [
+    sections: list[dict] = []
+
+    # ── Metrics strip ─────────────────────────────────────────────────────────
+    sections.append({"heading": "", "facts": [
         {"title": "Leads today", "value": str(leads_today)},
         {"title": "Q2 Target",   "value": "£400,000"},
-    ]
+    ]})
 
-    # Build body_text with named sections
-    body_parts = []
-
-    focus_parts = []
+    # ── TODAY'S FOCUS (attention/warning colour coding) ───────────────────────
+    focus_parts: list[str] = []
     ar = _clean(data.get("action_required", ""), 200)
     if _has_content(ar):
-        focus_parts.append(f"Action Required:\n{ar}")
+        focus_parts.append(f"**Action Required:**\n{ar}")
     aa = _clean(data.get("aws_actions", ""), 150)
     if _has_content(aa):
-        focus_parts.append(f"AWS Recommended Actions:\n{aa}")
+        focus_parts.append(f"**AWS Actions:**\n{aa}")
     cs = _clean(data.get("closing_soon", ""), 150)
     if _has_content(cs):
-        focus_parts.append(f"Closing this month:\n{cs}")
+        focus_parts.append(f"**Closing this month:**\n{cs}")
     if focus_parts:
-        body_parts.append("TODAY'S FOCUS\n" + "\n\n".join(focus_parts))
+        style = "attention" if _has_content(ar) else "warning" if _has_content(cs) else None
+        section: dict = {"heading": "TODAY'S FOCUS", "body": "\n\n".join(focus_parts)}
+        if style:
+            section["style"] = style
+        sections.append(section)
 
-    pipeline_text = _clean(data.get("pipeline", ""), _BUDGET["pipeline"])
-    if _has_content(pipeline_text):
-        body_parts.append(f"PIPELINE BY STAGE\n{pipeline_text}")
+    # ── PIPELINE BY STAGE — use FactSet if key:value lines found ─────────────
+    pipeline = _clean(data.get("pipeline", ""), _BUDGET["pipeline"])
+    if _has_content(pipeline):
+        facts = extract_facts(pipeline)
+        if facts:
+            sections.append({"heading": "PIPELINE BY STAGE", "facts": facts})
+        else:
+            sections.append({"heading": "PIPELINE BY STAGE", "body": pipeline})
 
-    aws_text = _clean(data.get("aws_stage", ""), _BUDGET["aws_truth"])
-    if _has_content(aws_text):
-        body_parts.append(f"AWS STAGE ALIGNMENT\n{aws_text}")
+    # ── AWS STAGE ALIGNMENT ───────────────────────────────────────────────────
+    aws = _clean(data.get("aws_stage", ""), _BUDGET["aws_truth"])
+    if _has_content(aws):
+        sections.append({"heading": "AWS STAGE ALIGNMENT", "body": aws})
 
-    risk_text = _clean(data.get("closing_soon", ""), _BUDGET["at_risk"])
-    if _has_content(risk_text):
-        body_parts.append(f"CLOSE DATE RISK — 30 DAYS\n{risk_text}")
+    # ── CLOSE DATE RISK ───────────────────────────────────────────────────────
+    risk = _clean(data.get("closing_soon", ""), _BUDGET["at_risk"])
+    if _has_content(risk):
+        sections.append({"heading": "CLOSE DATE RISK — 30 DAYS", "body": risk})
 
-    funding_text = _clean(data.get("funding", ""), _BUDGET["funding"])
-    if _has_content(funding_text):
-        body_parts.append(f"FUNDING ELIGIBLE\n{funding_text}")
+    # ── FUNDING ELIGIBLE ──────────────────────────────────────────────────────
+    funding = _clean(data.get("funding", ""), _BUDGET["funding"])
+    if _has_content(funding):
+        sections.append({"heading": "FUNDING ELIGIBLE", "body": funding})
 
-    cosell_text = _clean(data.get("cosell", ""), _BUDGET["cosell"])
-    if _has_content(cosell_text):
-        body_parts.append(f"CO-SELL INTELLIGENCE\n{cosell_text}")
+    # ── CO-SELL INTELLIGENCE ──────────────────────────────────────────────────
+    cosell = _clean(data.get("cosell", ""), _BUDGET["cosell"])
+    if _has_content(cosell):
+        sections.append({"heading": "CO-SELL INTELLIGENCE", "body": cosell})
 
+    # ── WEEKLY FOCUS (Monday only) ────────────────────────────────────────────
     if is_monday and weekly:
-        weekly_parts = []
+        weekly_parts: list[str] = []
         for label, key in [
             ("Close date cleanup", "close_date_cleanup"),
             ("Closed lost",        "closed_lost_analysis"),
             ("Pipeline velocity",  "pipeline_velocity"),
         ]:
             val = _clean(weekly.get(key, ""), 120)
-            if val:
-                weekly_parts.append(f"{label}: {val}")
+            if val and _has_content(val):
+                weekly_parts.append(f"**{label}:** {val}")
         if weekly_parts:
-            body_parts.append("WEEKLY FOCUS\n" + "\n".join(weekly_parts))
+            sections.append({"heading": "WEEKLY FOCUS", "body": "\n".join(weekly_parts)})
 
-    body_text = "\n\n".join(body_parts) if body_parts else "Nothing urgent today."
-
-    return await teams.post_to_ceo(title, body_text, facts=facts)
+    card = teams.build_section_card(title, sections, header_style="accent")
+    webhook_key = teams._resolve_webhook("teams/ceo-webhook-url")
+    ok = await teams._post_raw(card, webhook_key)
+    if not ok:
+        simple = teams._build_simple(title, "CEO briefing ready — check Teams")
+        ok = await teams._post_raw(simple, webhook_key)
+    return ok

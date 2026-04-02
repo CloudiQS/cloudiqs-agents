@@ -181,40 +181,37 @@ _DATA = {
 }
 
 
-@patch("app.teams.post_to_ace", new_callable=AsyncMock, return_value=True)
-async def test_post_hygiene_calls_post_to_ace(mock_post):
+@patch("app.teams._post_raw", new_callable=AsyncMock, return_value=True)
+async def test_post_hygiene_calls_post_to_ace(mock_raw):
     from app.ace_hygiene import post_hygiene_to_teams
     result = await post_hygiene_to_teams(_DATA)
     assert result is True
-    mock_post.assert_called_once()
+    mock_raw.assert_called_once()
 
 
-@patch("app.teams.post_to_ace", new_callable=AsyncMock, return_value=True)
-async def test_post_hygiene_title_has_score(mock_post):
+@patch("app.teams._post_raw", new_callable=AsyncMock, return_value=True)
+async def test_post_hygiene_title_has_score(mock_raw):
     from app.ace_hygiene import post_hygiene_to_teams
     await post_hygiene_to_teams(_DATA)
-    kwargs = mock_post.call_args[1]
-    title = kwargs.get("title") or mock_post.call_args[0][0]
-    assert "ACE HYGIENE" in title
-    assert "7/10" in title
-    assert "FAIR" in title
+    card_json = json.dumps(mock_raw.call_args[0][0])
+    assert "ACE HYGIENE" in card_json
+    assert "7/10" in card_json
+    assert "FAIR" in card_json
 
 
-@patch("app.teams.post_to_ace", new_callable=AsyncMock, return_value=True)
-async def test_post_hygiene_body_has_action_plan(mock_post):
+@patch("app.teams._post_raw", new_callable=AsyncMock, return_value=True)
+async def test_post_hygiene_body_has_action_plan(mock_raw):
     from app.ace_hygiene import post_hygiene_to_teams
     await post_hygiene_to_teams(_DATA)
-    kwargs = mock_post.call_args[1]
-    body = kwargs.get("body_text") or mock_post.call_args[0][1]
-    assert "ACTION PLAN" in body
-    assert "HIGH:" in body
+    card_json = json.dumps(mock_raw.call_args[0][0])
+    assert "ACTION PLAN" in card_json
+    assert "HIGH:" in card_json
 
 
-@patch("app.teams.post_to_ace", new_callable=AsyncMock, return_value=True)
-async def test_post_hygiene_facts_has_score(mock_post):
+@patch("app.teams._post_raw", new_callable=AsyncMock, return_value=True)
+async def test_post_hygiene_facts_has_score(mock_raw):
     from app.ace_hygiene import post_hygiene_to_teams
     await post_hygiene_to_teams(_DATA)
-    kwargs = mock_post.call_args[1]
-    facts = kwargs.get("facts") or []
-    assert any(f["title"] == "Health score" for f in facts)
-    assert any("7/10" in f["value"] for f in facts)
+    card_json = json.dumps(mock_raw.call_args[0][0])
+    assert "Health score" in card_json
+    assert "7/10" in card_json

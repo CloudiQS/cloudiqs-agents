@@ -25,7 +25,7 @@ from datetime import datetime
 from typing import Optional
 
 from app import teams
-from app.mcp_parser import parse_mcp_response, strip_narrative, truncate
+from app.mcp_parser import parse_mcp_response, strip_narrative, strip_pipe_tables, truncate
 
 logger = logging.getLogger("bridge")
 
@@ -44,6 +44,7 @@ _BUDGET = {
 
 def _clean(text: str, budget: int) -> str:
     cleaned = strip_narrative(text) if text else ""
+    cleaned = strip_pipe_tables(cleaned)
     if not cleaned:
         return "None found."
     return truncate(cleaned, budget)
@@ -226,7 +227,7 @@ async def run_hygiene() -> dict:
 # ── Teams card formatter ──────────────────────────────────────────────────────
 
 async def post_hygiene_to_teams(data: dict) -> bool:
-    """Format hygiene data and post to ACE channel via teams.post_to_ace."""
+    """Build a multi-section Adaptive Card and post to ACE channel."""
     date         = data.get("date", datetime.now().strftime("%d %b %Y"))
     health_score = data.get("health_score", 0)
     health_label = data.get("health_label", "POOR")
@@ -234,40 +235,38 @@ async def post_hygiene_to_teams(data: dict) -> bool:
 
     title = f"ACE HYGIENE — {date} | {health_score}/10 {health_label}"
 
-    facts = [
+    # Header colour based on health score
+    header_style = "attention" if health_score < 5 else "warning" if health_score < 8 else "good"
+
+    sections: list[dict] = []
+
+    # ── Metrics strip ─────────────────────────────────────────────────────────
+    sections.append({"heading": "", "facts": [
         {"title": "Health score", "value": f"{health_score}/10 ({health_label})"},
         {"title": "Date",         "value": date},
-    ]
+    ]})
 
-    body_parts = []
-
+    # ── ACTION PLAN ───────────────────────────────────────────────────────────
     action_plan_text = "\n".join(f"- {a}" for a in action_plan) if action_plan else "No actions needed."
-    body_parts.append(f"ACTION PLAN:\n{action_plan_text}")
+    sections.append({"heading": "ACTION PLAN", "body": action_plan_text})
 
-    ar_text = _clean(data.get("action_required", ""), _BUDGET["action_required"])
-    if _has_content(ar_text):
-        body_parts.append(f"ACTION REQUIRED:\n{ar_text}")
+    # ── Detail sections ───────────────────────────────────────────────────────
+    for section_key, label in [
+        ("action_required",  "ACTION REQUIRED"),
+        ("stale_launched",   "STALE LAUNCHED DEALS"),
+        ("funding_eligible", "FUNDING ELIGIBLE"),
+        ("aws_stage",        "AWS STAGE ALIGNMENT"),
+        ("past_close_dates", "PAST CLOSE DATES"),
+        ("cosell",           "CO-SELL ACTIVE"),
+    ]:
+        text = _clean(data.get(section_key, ""), _BUDGET[section_key])
+        if _has_content(text):
+            sections.append({"heading": label, "body": text})
 
-    stale_text = _clean(data.get("stale_launched", ""), _BUDGET["stale_launched"])
-    if _has_content(stale_text):
-        body_parts.append(f"STALE LAUNCHED DEALS:\n{stale_text}")
-
-    funding_text = _clean(data.get("funding_eligible", ""), _BUDGET["funding_eligible"])
-    if _has_content(funding_text):
-        body_parts.append(f"FUNDING ELIGIBLE:\n{funding_text}")
-
-    aws_text = _clean(data.get("aws_stage", ""), _BUDGET["aws_stage"])
-    if _has_content(aws_text):
-        body_parts.append(f"AWS STAGE ALIGNMENT:\n{aws_text}")
-
-    past_text = _clean(data.get("past_close_dates", ""), _BUDGET["past_close_dates"])
-    if _has_content(past_text):
-        body_parts.append(f"PAST CLOSE DATES:\n{past_text}")
-
-    cosell_text = _clean(data.get("cosell", ""), _BUDGET["cosell"])
-    if _has_content(cosell_text):
-        body_parts.append(f"CO-SELL ACTIVE:\n{cosell_text}")
-
-    body_text = "\n\n".join(body_parts)
-
-    return await teams.post_to_ace(title, body_text, facts=facts)
+    card = teams.build_section_card(title, sections, header_style=header_style)
+    webhook_key = teams._resolve_webhook("teams/ace-webhook-url")
+    ok = await teams._post_raw(card, webhook_key)
+    if not ok:
+        simple = teams._build_simple(title, action_plan_text)
+        ok = await teams._post_raw(simple, webhook_key)
+    return ok

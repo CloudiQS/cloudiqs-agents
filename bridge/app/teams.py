@@ -384,6 +384,17 @@ async def _post(
     return ok
 
 
+# ── Webhook key resolver ──────────────────────────────────────────────────────
+
+def _resolve_webhook(preferred_key: str, fallback_key: str = "teams/webhook-url") -> str:
+    """Return preferred webhook key if configured, otherwise fallback."""
+    try:
+        val = get_secret(preferred_key)
+        return preferred_key if not is_dummy(val) else fallback_key
+    except Exception:
+        return fallback_key
+
+
 # ── Named channel routing functions ──────────────────────────────────────────
 
 async def post_to_sdr(
@@ -403,8 +414,7 @@ async def post_to_ceo(
     colour: str = "0078D4",
 ) -> bool:
     """Post to the CEO briefing channel (teams/ceo-webhook-url, fallback to SDR)."""
-    key = get_secret("teams/ceo-webhook-url")
-    webhook_key = "teams/ceo-webhook-url" if not is_dummy(key) else "teams/webhook-url"
+    webhook_key = _resolve_webhook("teams/ceo-webhook-url")
     return await _post(title, body_text, facts, webhook_key=webhook_key)
 
 
@@ -415,8 +425,7 @@ async def post_to_ace(
     colour: str = "0078D4",
 ) -> bool:
     """Post to the ACE updates channel (teams/ace-webhook-url, fallback to SDR)."""
-    key = get_secret("teams/ace-webhook-url")
-    webhook_key = "teams/ace-webhook-url" if not is_dummy(key) else "teams/webhook-url"
+    webhook_key = _resolve_webhook("teams/ace-webhook-url")
     return await _post(title, body_text, facts, webhook_key=webhook_key)
 
 
