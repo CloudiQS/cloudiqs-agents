@@ -2,8 +2,8 @@
 CEO Briefing — comprehensive daily morning briefing for Steve.
 
 Runs at 06:00 every day via POST /ceo/briefing (called by ceo-ops agent).
-Makes 6 Partner Central MCP queries in sequence, combines them with
-today's HubSpot lead stats, and posts a single structured Teams message.
+Makes 6 Partner Central MCP queries in sequence, combines with today's
+HubSpot lead stats, and posts a single structured Teams MessageCard.
 
 On Mondays, adds a weekly pipeline hygiene section (3 extra MCP queries).
 
@@ -12,26 +12,66 @@ GET /ceo/briefing returns the same structured data as JSON without posting.
 Exported:
   run_briefing(stats)           -> dict with all briefing sections
   post_briefing_to_teams(data)  -> bool
+  _extract_assistant_text(r)    -> str  (shared with main.py hygiene)
+  _strip_narrative(text)        -> str  (shared with main.py hygiene)
 """
 
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Optional
 
 from app import teams
+from app.teams import _adaptive_card
 
 logger = logging.getLogger("bridge")
 
-_MAX_SECTION_CHARS = 800
+# Per-section character budgets — total stays well under 2000
+_BUDGET = {
+    "do_today":    450,
+    "pipeline":    250,
+    "aws_truth":   180,
+    "at_risk":     280,
+    "funding":     250,
+    "cosell":      200,
+    "engine":       80,
+    "weekly":      400,
+}
+
+# MCP agent thinking-out-loud prefixes to strip
+_NARRATIVE_PREFIXES = (
+    "I'll help",
+    "Let me",
+    "Now let me",
+    "I'll analyze",
+    "I'll hand",
+    "I need to",
+    "I can see",
+    "I've",
+    "I found",
+    "Perfect!",
+    "Great!",
+    "Working on it",
+    "Preparing",
+    "Fetching",
+    "Analyzing",
+    "Based on my analysis",
+    "I will",
+    "I am ",
+    "I'm ",
+    "Sure,",
+    "Certainly,",
+    "Of course",
+)
 
 
-# ── MCP response parser ───────────────────────────────────────────────────────
+# ── MCP response parsing ──────────────────────────────────────────────────────
 
 def _extract_assistant_text(result) -> str:
     """Extract readable text from a send_message response.
 
-    result['text'] is a JSON string whose structure is:
+    result['text'] is a JSON string:
       {"content": [
         {"type": "ASSISTANT_RESPONSE", "content": {"text": "..."}},
         {"type": "serverToolResult", ...},
@@ -62,11 +102,40 @@ def _extract_assistant_text(result) -> str:
         return raw.strip()
 
 
-def _trunc(text: str, limit: int = _MAX_SECTION_CHARS) -> str:
-    """Truncate text to limit chars, appending ellipsis if cut."""
-    if len(text) <= limit:
-        return text
-    return text[: limit - 1] + "…"
+def _strip_narrative(text: str) -> str:
+    """Remove MCP agent thinking-out-loud sentences from response text.
+
+    Strips any line that starts with one of the known narrative prefixes.
+    Collapses consecutive blank lines to a single blank.
+    """
+    cleaned = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped and any(stripped.startswith(p) for p in _NARRATIVE_PREFIXES):
+            continue
+        cleaned.append(line)
+
+    # Collapse multiple consecutive blank lines
+    result: list[str] = []
+    prev_blank = False
+    for line in cleaned:
+        is_blank = line.strip() == ""
+        if is_blank and prev_blank:
+            continue
+        result.append(line)
+        prev_blank = is_blank
+
+    return "\n".join(result).strip()
+
+
+def _clean(text: str, budget: int) -> str:
+    """Strip narrative then truncate to budget chars."""
+    cleaned = _strip_narrative(text)
+    if not cleaned:
+        return "No data."
+    if len(cleaned) <= budget:
+        return cleaned
+    return cleaned[: budget - 1] + "…"
 
 
 async def _mcp(query: str) -> str:
@@ -75,7 +144,7 @@ async def _mcp(query: str) -> str:
     try:
         result = await mcp_client.send_message(query, catalog="AWS")
         text = _extract_assistant_text(result)
-        return _trunc(text) if text else "No data returned."
+        return _strip_narrative(text) if text else "No data."
     except Exception as exc:
         logger.warning(
             "ceo_briefing_mcp_query_failed",
@@ -87,16 +156,10 @@ async def _mcp(query: str) -> str:
 # ── Main briefing runner ──────────────────────────────────────────────────────
 
 async def run_briefing(stats: Optional[dict] = None) -> dict:
-    """Run all CEO briefing queries in sequence and return structured data.
-
-    Args:
-        stats: Today's lead stats from bridge _stats dict.
-
-    Returns dict with keys for each Teams card section.
-    """
+    """Run all CEO briefing queries in sequence and return structured data."""
     is_monday = datetime.now().weekday() == 0
 
-    pipeline = await _mcp(
+    pipeline        = await _mcp(
         "Give me a breakdown of all my opportunities by stage "
         "with count and revenue per stage"
     )
@@ -104,19 +167,19 @@ async def run_briefing(stats: Optional[dict] = None) -> dict:
         "List all opportunities with Action Required status "
         "with company name and what AWS needs"
     )
-    closing_soon = await _mcp(
+    closing_soon    = await _mcp(
         "Which opportunities have target close dates within 30 days? "
         "Show company, close date, stage, and what is blocking"
     )
-    aws_stage = await _mcp(
+    aws_stage       = await _mcp(
         "For my Launched opportunities, how many have AWS stage Launched "
         "versus Closed Lost versus empty?"
     )
-    cosell = await _mcp(
+    cosell          = await _mcp(
         "Which of my open opportunities have AWS Sales Reps actively engaged? "
         "Show top 10 by expected spend with rep name"
     )
-    funding = await _mcp(
+    funding         = await _mcp(
         "Which of my opportunities at Business Validation or Technical Validation "
         "stage are eligible for funding?"
     )
@@ -152,77 +215,99 @@ async def run_briefing(stats: Optional[dict] = None) -> dict:
 
 # ── Teams card formatter ──────────────────────────────────────────────────────
 
-async def post_briefing_to_teams(data: dict) -> bool:
-    """Format briefing data as a Teams MessageCard and post it.
+def _has_content(text: str) -> bool:
+    """True if a section has real data (not a failure or empty placeholder)."""
+    if not text:
+        return False
+    return not any(
+        text.startswith(p)
+        for p in ("No data", "Query failed", "None")
+    )
 
-    Posts to teams/ceo-webhook-url with fallback to teams/webhook-url.
+
+def _theme_for(data: dict) -> str:
+    """Pick card border colour based on urgency."""
+    if _has_content(data.get("action_required", "")):
+        return "C00000"   # red — AWS wants something NOW
+    if _has_content(data.get("closing_soon", "")):
+        return "FFC000"   # amber — deals at risk
+    return "1F3D7A"        # blue — normal morning briefing
+
+
+async def post_briefing_to_teams(data: dict) -> bool:
+    """Format briefing data as an Adaptive Card and post to CEO channel.
+
+    Card structure:
+      Title:     CEO BRIEFING — [DATE]
+      DO TODAY:  action required + closing soon
+      PIPELINE:  stage breakdown
+      AWS TRUTH: confirmed vs mismatch counts
+      AT RISK:   deals closing within 30 days
+      FUNDING:   eligible programs
+      CO-SELL:   active AWS reps
+      ENGINE:    FactSet (leads today, bridge status)
+      WEEKLY:    Monday only — close date cleanup, closed lost, velocity
     """
-    date = data.get("date", datetime.now().strftime("%d %b %Y"))
-    is_monday = data.get("is_monday", False)
-    weekly = data.get("weekly", {})
+    date        = data.get("date", datetime.now().strftime("%d %b %Y"))
+    is_monday   = data.get("is_monday", False)
+    weekly      = data.get("weekly", {})
     leads_today = data.get("leads_today", 0)
 
-    sections = [
+    # DO TODAY — combine action required + closing soon
+    do_today_parts = []
+    ar = _clean(data.get("action_required", ""), 200)
+    if _has_content(ar):
+        do_today_parts.append(f"Action Required:\n{ar}")
+    cs = _clean(data.get("closing_soon", ""), 200)
+    if _has_content(cs):
+        do_today_parts.append(f"Closing this month:\n{cs}")
+    do_today_text = "\n\n".join(do_today_parts) if do_today_parts else "Nothing urgent today."
+
+    def _header(label: str) -> dict:
+        return {"type": "TextBlock", "text": label, "weight": "bolder"}
+
+    def _body(text: str) -> dict:
+        return {"type": "TextBlock", "text": text, "wrap": True}
+
+    body: list[dict] = [
         {
-            "activityTitle": "TODAY'S ACTIONS",
-            "activityText": (
-                f"**Action Required (AWS)**\n"
-                f"{data.get('action_required', 'None')}\n\n"
-                f"**Deals closing this month**\n"
-                f"{data.get('closing_soon', 'None')}"
-            ),
+            "type": "TextBlock",
+            "text": f"CEO BRIEFING — {date}",
+            "size": "large",
+            "weight": "bolder",
         },
+        _header("DO TODAY"),
+        _body(do_today_text),
+        _header("PIPELINE"),
+        _body(_clean(data.get("pipeline", ""), _BUDGET["pipeline"])),
+        _header("AWS TRUTH"),
+        _body(_clean(data.get("aws_stage", ""), _BUDGET["aws_truth"])),
+        _header("AT RISK"),
+        _body(_clean(data.get("closing_soon", ""), _BUDGET["at_risk"])),
+        _header("FUNDING"),
+        _body(_clean(data.get("funding", ""), _BUDGET["funding"])),
+        _header("CO-SELL"),
+        _body(_clean(data.get("cosell", ""), _BUDGET["cosell"])),
+        _header("ENGINE"),
         {
-            "activityTitle": "PIPELINE SCORECARD",
-            "activityText": data.get("pipeline", "No data."),
-        },
-        {
-            "activityTitle": "AWS STAGE TRUTH",
-            "activityText": data.get("aws_stage", "No data."),
-        },
-        {
-            "activityTitle": "AT RISK THIS MONTH",
-            "activityText": data.get("closing_soon", "No data."),
-        },
-        {
-            "activityTitle": "FUNDING OPPORTUNITIES",
-            "activityText": data.get("funding", "No data."),
-        },
-        {
-            "activityTitle": "CO-SELL ACTIVE",
-            "activityText": data.get("cosell", "No data."),
-        },
-        {
-            "activityTitle": "ENGINE HEALTH",
-            "activityText": (
-                f"Leads found today: {leads_today}\n"
-                f"Bridge: healthy"
-            ),
+            "type": "FactSet",
+            "facts": [
+                {"title": "Leads today", "value": str(leads_today)},
+                {"title": "Bridge",      "value": "healthy"},
+            ],
         },
     ]
 
     if is_monday and weekly:
-        sections.append(
-            {
-                "activityTitle": "WEEKLY FOCUS (Monday)",
-                "activityText": (
-                    f"**Close date cleanup**\n"
-                    f"{weekly.get('close_date_cleanup', 'N/A')}\n\n"
-                    f"**Closed lost analysis**\n"
-                    f"{weekly.get('closed_lost_analysis', 'N/A')}\n\n"
-                    f"**Pipeline velocity**\n"
-                    f"{weekly.get('pipeline_velocity', 'N/A')}"
-                ),
-            }
-        )
+        weekly_parts = []
+        for label, key in [
+            ("Close date cleanup", "close_date_cleanup"),
+            ("Closed lost",        "closed_lost_analysis"),
+            ("Pipeline velocity",  "pipeline_velocity"),
+        ]:
+            val = _clean(weekly.get(key, ""), 120)
+            weekly_parts.append(f"{label}: {val}")
+        body.append(_header("WEEKLY FOCUS (Monday)"))
+        body.append(_body("\n".join(weekly_parts)))
 
-    card = {
-        "@type": "MessageCard",
-        "@context": "https://schema.org/extensions",
-        "themeColor": "1F3D7A",
-        "summary": f"CloudiQS CEO Briefing {date}",
-        "title": f"CLOUDIQS CEO BRIEFING — {date}",
-        "sections": sections,
-    }
-
-    return await teams.post_to_ceo(card)
+    return await teams.post_to_ceo(_adaptive_card(body))

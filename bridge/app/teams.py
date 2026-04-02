@@ -5,7 +5,10 @@ Three channel routing functions (use these, not _post directly):
   post_to_ceo(payload)  - CEO briefing channel  (teams/ceo-webhook-url)
   post_to_ace(payload)  - ACE updates channel   (teams/ace-webhook-url)
 
-Legacy helpers (kept for backward compatibility and plain-text messages):
+Card builder:
+  _adaptive_card(body)  - wrap body items in the Adaptive Card envelope
+
+Legacy helpers:
   notify(text)      - plain text to SDR channel
   notify_lead(dict) - rich lead card to SDR channel
 """
@@ -16,6 +19,34 @@ import httpx
 from app.config import get_secret, is_dummy
 
 logger = logging.getLogger("bridge")
+
+
+# ── Adaptive Card envelope ────────────────────────────────────────────────────
+
+def _adaptive_card(body: list) -> dict:
+    """Wrap body elements in the Adaptive Card envelope required by Teams.
+
+    All Teams posts should use this format:
+      {
+        "type": "message",
+        "attachments": [{
+          "contentType": "application/vnd.microsoft.card.adaptive",
+          "content": {"$schema": "...", "type": "AdaptiveCard", "version": "1.4", "body": [...]}
+        }]
+      }
+    """
+    return {
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard",
+                "version": "1.4",
+                "body": body,
+            },
+        }],
+    }
 
 
 # ── Internal HTTP helper ──────────────────────────────────────────────────────
@@ -72,7 +103,8 @@ async def post_to_ace(payload: dict) -> bool:
 
 async def notify(text: str, webhook_key: str = "teams/webhook-url") -> bool:
     """Send a plain-text message to Teams. Defaults to SDR channel."""
-    return await _post({"text": text}, webhook_key=webhook_key)
+    card = _adaptive_card([{"type": "TextBlock", "text": text, "wrap": True}])
+    return await _post(card, webhook_key=webhook_key)
 
 
 # ── Rich lead card ────────────────────────────────────────────────────────────
@@ -117,55 +149,57 @@ async def notify_lead(lead_data: dict) -> bool:
     hubspot_deal  = lead_data.get("hubspot_deal_id", "")
     instantly_id  = lead_data.get("instantly_lead_id", "")
 
-    # ── Section 1: Company ───────────────────────────────────────────────────
-    company_facts: list[dict] = [{"name": "Company", "value": company}]
+    # ── Company facts ────────────────────────────────────────────────────────
+    company_facts: list[dict] = [{"title": "Company", "value": company}]
     if website:
-        company_facts.append({"name": "Website", "value": f"[{website}]({website})"})
+        company_facts.append({"title": "Website", "value": website})
     if employees:
-        company_facts.append({"name": "Employees", "value": str(employees)})
+        company_facts.append({"title": "Employees", "value": str(employees)})
     if location and location not in ("GB", ""):
-        company_facts.append({"name": "Location", "value": location})
+        company_facts.append({"title": "Location", "value": location})
     if ch_number:
-        company_facts.append({"name": "Companies House", "value": ch_number})
+        company_facts.append({"title": "Companies House", "value": ch_number})
 
-    # ── Section 2: Contact ───────────────────────────────────────────────────
+    # ── Contact facts ────────────────────────────────────────────────────────
     primary = f"{contact} | {job_title}" if (contact and job_title) else contact or "Unknown"
-    contact_facts: list[dict] = [{"name": "PRIMARY", "value": primary}]
+    contact_facts: list[dict] = [{"title": "PRIMARY", "value": primary}]
     if email_addr:
-        contact_facts.append({"name": "Email", "value": email_addr})
+        contact_facts.append({"title": "Email", "value": email_addr})
     if linkedin:
-        contact_facts.append({"name": "LinkedIn", "value": f"[{linkedin}]({linkedin})"})
+        contact_facts.append({"title": "LinkedIn", "value": linkedin})
 
-    # ── Section 3: Intelligence ──────────────────────────────────────────────
+    # ── Intelligence facts ───────────────────────────────────────────────────
     intel_facts: list[dict] = []
     if signal:
-        intel_facts.append({"name": "Signal", "value": signal})
+        intel_facts.append({"title": "Signal", "value": signal})
     if pain:
-        intel_facts.append({"name": "Pain", "value": pain})
+        intel_facts.append({"title": "Pain", "value": pain})
     if play:
-        intel_facts.append({"name": "Play", "value": play})
+        intel_facts.append({"title": "Play", "value": play})
 
-    # ── Section 4: CRM status ────────────────────────────────────────────────
+    # ── CRM status ───────────────────────────────────────────────────────────
     crm_parts = []
     if hubspot_deal:
         crm_parts.append(f"HubSpot: {hubspot_deal}")
     crm_parts.append(f"Instantly: {'enrolled' if instantly_id else 'skipped'}")
 
-    # ── Assemble MessageCard ─────────────────────────────────────────────────
-    sections = [
-        {"facts": company_facts},
-        {"facts": contact_facts},
+    # ── Assemble Adaptive Card ───────────────────────────────────────────────
+    body: list[dict] = [
+        {
+            "type": "TextBlock",
+            "text": f"New Lead | ICP {icp}/10 | {campaign}",
+            "size": "medium",
+            "weight": "bolder",
+        },
+        {"type": "FactSet", "facts": company_facts},
+        {"type": "FactSet", "facts": contact_facts},
     ]
     if intel_facts:
-        sections.append({"facts": intel_facts})
-    sections.append({"text": " &nbsp;|&nbsp; ".join(crm_parts)})
+        body.append({"type": "FactSet", "facts": intel_facts})
+    body.append({
+        "type": "TextBlock",
+        "text": " | ".join(crm_parts),
+        "wrap": True,
+    })
 
-    card = {
-        "@type": "MessageCard",
-        "@context": "https://schema.org/extensions",
-        "themeColor": "FF6600",
-        "summary": f"New Lead | {company} | ICP {icp}/10",
-        "title": f"New Lead | ICP {icp}/10 | {campaign}",
-        "sections": sections,
-    }
-    return await post_to_sdr(card)
+    return await post_to_sdr(_adaptive_card(body))

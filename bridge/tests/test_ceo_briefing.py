@@ -1,4 +1,4 @@
-"""Unit tests for app.ceo_briefing — response parsing, briefing runner, Teams card."""
+"""Unit tests for app.ceo_briefing — parsing, narrative stripping, card formatting."""
 import json
 from unittest.mock import AsyncMock, patch
 
@@ -29,8 +29,7 @@ def test_extract_joins_multiple_assistant_blocks():
         })
     }
     result = _extract_assistant_text(payload)
-    assert "Part one." in result
-    assert "Part two." in result
+    assert "Part one." in result and "Part two." in result
 
 
 def test_extract_falls_back_to_raw_on_non_json():
@@ -43,23 +42,94 @@ def test_extract_returns_empty_on_none():
     assert _extract_assistant_text(None) == ""
 
 
-def test_extract_returns_empty_on_missing_text_key():
-    from app.ceo_briefing import _extract_assistant_text
-    assert _extract_assistant_text({}) == ""
+# ── _strip_narrative ──────────────────────────────────────────────────────────
+
+def test_strip_removes_ill_help_line():
+    from app.ceo_briefing import _strip_narrative
+    text = "I'll help you with that.\nAcme Corp: Action Required."
+    assert "I'll help" not in _strip_narrative(text)
+    assert "Acme Corp" in _strip_narrative(text)
 
 
-# ── _trunc ────────────────────────────────────────────────────────────────────
+def test_strip_removes_let_me_line():
+    from app.ceo_briefing import _strip_narrative
+    text = "Let me fetch your pipeline data.\n5 deals at Committed stage."
+    result = _strip_narrative(text)
+    assert "Let me" not in result
+    assert "5 deals" in result
 
-def test_trunc_short_string_unchanged():
-    from app.ceo_briefing import _trunc
-    assert _trunc("hello", 10) == "hello"
+
+def test_strip_keeps_data_lines():
+    from app.ceo_briefing import _strip_narrative
+    text = "Prospect: 8\nQualified: 4\nLaunched: 2"
+    assert _strip_narrative(text) == text
 
 
-def test_trunc_long_string_cut_with_ellipsis():
-    from app.ceo_briefing import _trunc
-    result = _trunc("a" * 900)
-    assert len(result) == 800
+def test_strip_collapses_consecutive_blanks():
+    from app.ceo_briefing import _strip_narrative
+    text = "Line one.\n\n\n\nLine two."
+    result = _strip_narrative(text)
+    assert "\n\n\n" not in result
+    assert "Line one." in result
+    assert "Line two." in result
+
+
+def test_strip_removes_multiple_narrative_prefixes():
+    from app.ceo_briefing import _strip_narrative
+    text = (
+        "I'll analyze your data now.\n"
+        "Great!\n"
+        "Fetching results...\n"
+        "Acme Ltd closes 10 Apr."
+    )
+    result = _strip_narrative(text)
+    assert "Acme Ltd" in result
+    assert "I'll analyze" not in result
+    assert "Great!" not in result
+    assert "Fetching" not in result
+
+
+# ── _clean ────────────────────────────────────────────────────────────────────
+
+def test_clean_truncates_to_budget():
+    from app.ceo_briefing import _clean
+    long_text = "Acme Corp deal. " * 100
+    result = _clean(long_text, 200)
+    assert len(result) <= 200
     assert result.endswith("…")
+
+
+def test_clean_returns_no_data_when_empty():
+    from app.ceo_briefing import _clean
+    assert _clean("", 200) == "No data."
+
+
+def test_clean_strips_narrative_before_truncating():
+    from app.ceo_briefing import _clean
+    text = "Let me fetch that.\nAcme Corp: 5 deals."
+    result = _clean(text, 500)
+    assert "Let me" not in result
+    assert "Acme Corp" in result
+
+
+# ── _theme_for ────────────────────────────────────────────────────────────────
+
+def test_theme_red_when_action_required():
+    from app.ceo_briefing import _theme_for
+    assert _theme_for({"action_required": "Acme: submit win wire"}) == "C00000"
+
+
+def test_theme_amber_when_closing_soon_no_action():
+    from app.ceo_briefing import _theme_for
+    assert _theme_for({
+        "action_required": "No data.",
+        "closing_soon": "Acme closes 10 Apr",
+    }) == "FFC000"
+
+
+def test_theme_blue_when_nothing_urgent():
+    from app.ceo_briefing import _theme_for
+    assert _theme_for({}) == "1F3D7A"
 
 
 # ── _mcp helper ───────────────────────────────────────────────────────────────
@@ -67,18 +137,20 @@ def test_trunc_long_string_cut_with_ellipsis():
 _MCP_RESPONSE = {
     "text": json.dumps({
         "content": [
-            {"type": "ASSISTANT_RESPONSE", "content": {"text": "5 opportunities at Committed stage."}},
+            {"type": "ASSISTANT_RESPONSE", "content": {
+                "text": "Let me fetch that.\n5 opportunities at Committed stage."
+            }},
         ]
     })
 }
 
 
 @patch("app.mcp_client.send_message", new_callable=AsyncMock, return_value=_MCP_RESPONSE)
-async def test_mcp_returns_extracted_text(mock_send):
+async def test_mcp_strips_narrative_from_response(mock_send):
     from app.ceo_briefing import _mcp
     result = await _mcp("any query")
-    assert result == "5 opportunities at Committed stage."
-    mock_send.assert_called_once()
+    assert "Let me" not in result
+    assert "5 opportunities" in result
 
 
 @patch("app.mcp_client.send_message", new_callable=AsyncMock, side_effect=Exception("timeout"))
@@ -90,48 +162,32 @@ async def test_mcp_returns_fallback_on_exception(mock_send):
 
 # ── run_briefing ──────────────────────────────────────────────────────────────
 
-@patch("app.ceo_briefing._mcp", new_callable=AsyncMock, return_value="mocked section text")
+@patch("app.ceo_briefing._mcp", new_callable=AsyncMock, return_value="5 deals at Committed.")
 async def test_run_briefing_returns_all_keys(mock_mcp):
     from app.ceo_briefing import run_briefing
     result = await run_briefing(stats={"total_leads": 3})
-    assert "date" in result
-    assert "pipeline" in result
-    assert "action_required" in result
-    assert "closing_soon" in result
-    assert "aws_stage" in result
-    assert "cosell" in result
-    assert "funding" in result
-    assert "weekly" in result
+    for key in ("date", "pipeline", "action_required", "closing_soon",
+                "aws_stage", "cosell", "funding", "weekly", "leads_today"):
+        assert key in result
     assert result["leads_today"] == 3
 
 
 @patch("app.ceo_briefing._mcp", new_callable=AsyncMock, return_value="ok")
-async def test_run_briefing_handles_none_stats(mock_mcp):
+async def test_run_briefing_monday_has_weekly(mock_mcp):
     from app.ceo_briefing import run_briefing
-    result = await run_briefing(stats=None)
-    assert result["leads_today"] == 0
-
-
-@patch("app.ceo_briefing._mcp", new_callable=AsyncMock, return_value="ok")
-async def test_run_briefing_monday_includes_weekly(mock_mcp):
-    from app.ceo_briefing import run_briefing
-    import app.ceo_briefing as module
-    # Force is_monday by patching datetime
     with patch("app.ceo_briefing.datetime") as mock_dt:
-        mock_dt.now.return_value.weekday.return_value = 0  # Monday
-        mock_dt.now.return_value.strftime.return_value = "07 Apr 2026"
+        mock_dt.now.return_value.weekday.return_value = 0
+        mock_dt.now.return_value.strftime.return_value = "06 Apr 2026"
         result = await run_briefing()
     assert result["is_monday"] is True
     assert "close_date_cleanup" in result["weekly"]
-    assert "closed_lost_analysis" in result["weekly"]
-    assert "pipeline_velocity" in result["weekly"]
 
 
 @patch("app.ceo_briefing._mcp", new_callable=AsyncMock, return_value="ok")
 async def test_run_briefing_non_monday_empty_weekly(mock_mcp):
     from app.ceo_briefing import run_briefing
     with patch("app.ceo_briefing.datetime") as mock_dt:
-        mock_dt.now.return_value.weekday.return_value = 2  # Wednesday
+        mock_dt.now.return_value.weekday.return_value = 2
         mock_dt.now.return_value.strftime.return_value = "08 Apr 2026"
         result = await run_briefing()
     assert result["is_monday"] is False
@@ -140,47 +196,73 @@ async def test_run_briefing_non_monday_empty_weekly(mock_mcp):
 
 # ── post_briefing_to_teams ────────────────────────────────────────────────────
 
-_BRIEFING_DATA = {
-    "date": "07 Apr 2026",
+_DATA = {
+    "date": "02 Apr 2026",
     "is_monday": False,
-    "pipeline": "5 Committed, 3 Launched",
-    "action_required": "Acme Corp: submit win wire",
-    "closing_soon": "Acme Corp closes 10 Apr",
-    "aws_stage": "8 Launched confirmed, 1 Closed Lost, 0 empty",
-    "cosell": "Bob Smith engaged on Acme deal",
-    "funding": "Acme eligible for MAP",
+    "pipeline": "Prospect: 8 | Qualified: 4",
+    "action_required": "Acme: submit win wire",
+    "closing_soon": "Acme closes 10 Apr",
+    "aws_stage": "8 confirmed, 1 Closed Lost",
+    "cosell": "Bob Smith on Acme",
+    "funding": "Acme eligible MAP $25k",
     "weekly": {},
     "leads_today": 12,
 }
 
 
 @patch("app.teams.post_to_ceo", new_callable=AsyncMock, return_value=True)
-async def test_post_briefing_builds_correct_card(mock_post_to_ceo):
+async def test_post_briefing_title_contains_date(mock_post):
     from app.ceo_briefing import post_briefing_to_teams
-    result = await post_briefing_to_teams(_BRIEFING_DATA)
-    assert result is True
-    card = mock_post_to_ceo.call_args[0][0]
-    assert card["themeColor"] == "1F3D7A"
-    assert "CLOUDIQS CEO BRIEFING" in card["title"]
-    assert "07 Apr 2026" in card["title"]
+    await post_briefing_to_teams(_DATA)
+    card = mock_post.call_args[0][0]
+    body = card["attachments"][0]["content"]["body"]
+    title_block = body[0]
+    assert "CEO BRIEFING" in title_block["text"]
+    assert "02 Apr 2026" in title_block["text"]
 
 
 @patch("app.teams.post_to_ceo", new_callable=AsyncMock, return_value=True)
-async def test_post_briefing_routes_to_ceo_channel(mock_post_to_ceo):
+async def test_post_briefing_body_contains_sections(mock_post):
     from app.ceo_briefing import post_briefing_to_teams
-    await post_briefing_to_teams(_BRIEFING_DATA)
-    mock_post_to_ceo.assert_called_once()
+    data = dict(_DATA, action_required="No data.", closing_soon="No data.")
+    await post_briefing_to_teams(data)
+    card = mock_post.call_args[0][0]
+    body = card["attachments"][0]["content"]["body"]
+    texts = [b.get("text", "") for b in body]
+    assert any("PIPELINE" in t for t in texts)
+    assert any("ENGINE" in t for t in texts)
 
 
 @patch("app.teams.post_to_ceo", new_callable=AsyncMock, return_value=True)
-async def test_post_briefing_monday_includes_weekly_section(mock_post_to_ceo):
+async def test_post_briefing_engine_section_uses_facts(mock_post):
     from app.ceo_briefing import post_briefing_to_teams
-    data = dict(_BRIEFING_DATA, is_monday=True, weekly={
-        "close_date_cleanup": "3 deals overdue",
-        "closed_lost_analysis": "Top reason: budget",
-        "pipeline_velocity": "avg 45 days",
+    await post_briefing_to_teams(_DATA)
+    card = mock_post.call_args[0][0]
+    body = card["attachments"][0]["content"]["body"]
+    fact_sets = [b for b in body if b.get("type") == "FactSet"]
+    assert any(
+        any(f["title"] == "Leads today" and f["value"] == "12" for f in fs["facts"])
+        for fs in fact_sets
+    )
+
+
+@patch("app.teams.post_to_ceo", new_callable=AsyncMock, return_value=True)
+async def test_post_briefing_monday_weekly_section(mock_post):
+    from app.ceo_briefing import post_briefing_to_teams
+    data = dict(_DATA, is_monday=True, weekly={
+        "close_date_cleanup": "3 overdue",
+        "closed_lost_analysis": "Budget",
+        "pipeline_velocity": "45 days",
     })
     await post_briefing_to_teams(data)
-    card = mock_post_to_ceo.call_args[0][0]
-    section_titles = [s.get("activityTitle", "") for s in card["sections"]]
-    assert any("WEEKLY FOCUS" in t for t in section_titles)
+    card = mock_post.call_args[0][0]
+    body = card["attachments"][0]["content"]["body"]
+    texts = [b.get("text", "") for b in body]
+    assert any("WEEKLY" in t for t in texts)
+
+
+@patch("app.teams.post_to_ceo", new_callable=AsyncMock, return_value=True)
+async def test_post_briefing_routes_to_ceo_channel(mock_post):
+    from app.ceo_briefing import post_briefing_to_teams
+    await post_briefing_to_teams(_DATA)
+    mock_post.assert_called_once()

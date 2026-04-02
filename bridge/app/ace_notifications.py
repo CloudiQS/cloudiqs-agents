@@ -28,6 +28,7 @@ from datetime import datetime
 from typing import Optional
 
 from app import teams
+from app.teams import _adaptive_card
 
 logger = logging.getLogger("bridge")
 
@@ -45,16 +46,12 @@ async def _ace_post(card: dict) -> bool:
     return await teams.post_to_ace(card)
 
 
-def _card(colour: str, title: str, summary: str, body: str) -> dict:
-    """Build a compact single-section MessageCard."""
-    return {
-        "@type": "MessageCard",
-        "@context": "https://schema.org/extensions",
-        "themeColor": colour,
-        "summary": summary,
-        "title": title,
-        "sections": [{"text": body}],
-    }
+def _card(title: str, summary: str, body: str) -> dict:
+    """Build a compact two-element Adaptive Card (title + body text)."""
+    return _adaptive_card([
+        {"type": "TextBlock", "text": title, "size": "medium", "weight": "bolder"},
+        {"type": "TextBlock", "text": body, "wrap": True},
+    ])
 
 
 # ── 1. New opportunity created ────────────────────────────────────────────────
@@ -77,7 +74,7 @@ async def notify_created(opp_id: str, lead) -> bool:
         f"Stage: Prospect | Campaign: {campaign} | "
         f"ARR: {arr_str} | Contact: {contact}"
     )
-    card = _card(_GREEN, title, f"New ACE opportunity: {company}", body)
+    card = _card(title, f"New ACE opportunity: {company}", body)
     logger.info("ace_notify_created", extra={"opp_id": opp_id, "company": company})
     return await _ace_post(card)
 
@@ -94,7 +91,7 @@ async def notify_stage_change(
     from_str = f"{old_stage} → " if old_stage else ""
     title = f"STAGE UPDATE | {company} | {opp_id}"
     body = f"Stage: {from_str}{new_stage}"
-    card = _card(_AMBER, title, f"Stage change: {company}", body)
+    card = _card(title, f"Stage change: {company}", body)
     logger.info(
         "ace_notify_stage_change",
         extra={"opp_id": opp_id, "company": company, "new_stage": new_stage},
@@ -111,28 +108,21 @@ async def notify_hygiene(report: dict) -> bool:
         report: dict with keys action_required, stale_launched, funding_eligible
     """
     today = datetime.now().strftime("%d %b %Y")
-    card = {
-        "@type": "MessageCard",
-        "@context": "https://schema.org/extensions",
-        "themeColor": _BLUE,
-        "summary": f"ACE Hygiene Report {today}",
-        "title": f"ACE HYGIENE REPORT — {today}",
-        "sections": [
-            {
-                "activityTitle": "ACTION REQUIRED",
-                "activityText": report.get("action_required", "None"),
-            },
-            {
-                "activityTitle": "STALE LAUNCHED (30+ days no update)",
-                "activityText": report.get("stale_launched", "None"),
-            },
-            {
-                "activityTitle": "FUNDING ELIGIBLE",
-                "activityText": report.get("funding_eligible", "None"),
-            },
-        ],
-    }
-    return await _ace_post(card)
+    body = [
+        {
+            "type": "TextBlock",
+            "text": f"ACE HYGIENE REPORT — {today}",
+            "size": "medium",
+            "weight": "bolder",
+        },
+        {"type": "TextBlock", "text": "ACTION REQUIRED", "weight": "bolder"},
+        {"type": "TextBlock", "text": report.get("action_required", "None"), "wrap": True},
+        {"type": "TextBlock", "text": "STALE LAUNCHED (30+ days no update)", "weight": "bolder"},
+        {"type": "TextBlock", "text": report.get("stale_launched", "None"), "wrap": True},
+        {"type": "TextBlock", "text": "FUNDING ELIGIBLE", "weight": "bolder"},
+        {"type": "TextBlock", "text": report.get("funding_eligible", "None"), "wrap": True},
+    ]
+    return await _ace_post(_adaptive_card(body))
 
 
 # ── 4. Funding eligible ───────────────────────────────────────────────────────
@@ -149,7 +139,7 @@ async def notify_funding_eligible(
     action_str = f" | Action: {action}" if action else ""
     title = f"FUNDING ELIGIBLE | {company} | {opp_id}"
     body = f"Program: {program}{amount_str}{action_str}"
-    card = _card(_GREEN, title, f"Funding eligible: {company}", body)
+    card = _card(title, f"Funding eligible: {company}", body)
     logger.info(
         "ace_notify_funding",
         extra={"opp_id": opp_id, "company": company, "program": program},
@@ -172,7 +162,7 @@ async def notify_stage_mismatch(
     body = (
         f"Partner says: {partner_stage} | AWS says: {aws_stage}{action_str}"
     )
-    card = _card(_RED, title, f"Stage mismatch: {company}", body)
+    card = _card(title, f"Stage mismatch: {company}", body)
     logger.warning(
         "ace_notify_mismatch",
         extra={"opp_id": opp_id, "company": company, "aws_stage": aws_stage},
@@ -192,7 +182,7 @@ async def notify_action_required(
     deadline_str = f" | Deadline: {deadline}" if deadline else ""
     title = f"ACTION REQUIRED | {company} | {opp_id}"
     body = f"AWS needs: {what_needed}{deadline_str}"
-    card = _card(_RED, title, f"Action required: {company}", body)
+    card = _card(title, f"Action required: {company}", body)
     logger.warning(
         "ace_notify_action_required",
         extra={"opp_id": opp_id, "company": company},
@@ -210,7 +200,7 @@ async def notify_inbound_ao(
     """Post an amber card when an AWS Originated invitation is detected."""
     title = f"INBOUND FROM AWS | {company}"
     body = f"AWS Contact: {aws_contact} | Action: {action}"
-    card = _card(_AMBER, title, f"Inbound AO: {company}", body)
+    card = _card(title, f"Inbound AO: {company}", body)
     logger.info("ace_notify_inbound_ao", extra={"company": company})
     return await _ace_post(card)
 
@@ -225,13 +215,12 @@ async def notify_close_date_warning(
     days_left: int,
 ) -> bool:
     """Post a red (<7 days) or amber (7-14 days) card for close date risk."""
-    colour = _RED if days_left <= 7 else _AMBER
     title = f"CLOSE DATE RISK | {company} | {opp_id}"
     body = (
         f"Closes: {close_date} | Current stage: {stage} | "
         f"Days left: {days_left}"
     )
-    card = _card(colour, title, f"Close date risk: {company}", body)
+    card = _card(title, f"Close date risk: {company}", body)
     logger.warning(
         "ace_notify_close_risk",
         extra={"opp_id": opp_id, "company": company, "days_left": days_left},
@@ -252,23 +241,13 @@ async def notify_briefing_alerts(briefing_data: dict) -> bool:
 
     action_text = briefing_data.get("action_required", "")
     if action_text and "Query failed" not in action_text and "No data" not in action_text:
-        card = _card(
-            _RED,
-            f"ACTION REQUIRED — {today}",
-            f"ACE actions required {today}",
-            action_text[:800],
-        )
+        card = _card(f"ACTION REQUIRED — {today}", f"ACE actions required {today}", action_text[:800])
         await _ace_post(card)
         posted = True
 
     aws_text = briefing_data.get("aws_stage", "")
     if aws_text and "Query failed" not in aws_text and "No data" not in aws_text:
-        card = _card(
-            _AMBER,
-            f"AWS STAGE TRUTH — {today}",
-            f"AWS stage alignment {today}",
-            aws_text[:800],
-        )
+        card = _card(f"AWS STAGE TRUTH — {today}", f"AWS stage alignment {today}", aws_text[:800])
         await _ace_post(card)
         posted = True
 

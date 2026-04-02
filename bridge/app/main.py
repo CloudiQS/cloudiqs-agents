@@ -358,12 +358,10 @@ async def ingest(payload: IngestPayload):
     deal_id = await hubspot.create_ingest_deal(payload)
 
     if deal_id:
-        await teams.post_to_sdr({
-            "text": (
-                f"**Ingest** | {payload.company} | {payload.campaign}\n"
-                f"Deal: {deal_id} | Source: {payload.source}"
-            )
-        })
+        await teams.notify(
+            f"Ingest | {payload.company} | {payload.campaign}\n"
+            f"Deal: {deal_id} | Source: {payload.source}"
+        )
 
     return {
         "status": "created" if deal_id else "skipped",
@@ -490,36 +488,17 @@ async def ace_update(request: Request):
     }
 
 
-def _extract_mcp_text(result) -> str:
-    """Extract plain text from an MCP send_message response.
+def _parse_mcp(result) -> str:
+    """Extract and clean text from an MCP send_message response.
 
-    mcp_client.send_message returns a dict built from the JSON-RPC result.
-    The text is already concatenated into result["text"] by mcp_client.py.
-    However if the raw structure comes through, also handle:
-      result["content"] -> list of blocks where block["type"] == "text"
-    Falls back gracefully to empty string on any parse error.
+    Delegates to ceo_briefing._extract_assistant_text for JSON-RPC parsing,
+    then strips MCP narrative sentences via ceo_briefing._strip_narrative.
     """
-    if result is None or isinstance(result, Exception):
-        return ""
-    # Primary path — mcp_client already concatenates text blocks into "text"
-    text = result.get("text", "")
-    if text:
-        return text.strip()
-    # Fallback — walk content array if present
-    for block in result.get("content", []):
-        # Handle nested: block may be {"type": "text", "text": "..."}
-        # or {"type": "ASSISTANT_RESPONSE", "content": {"text": "..."}}
-        if block.get("type") == "text":
-            text += block.get("text", "")
-        elif block.get("type") == "ASSISTANT_RESPONSE":
-            inner = block.get("content", {})
-            if isinstance(inner, dict):
-                text += inner.get("text", "")
-            elif isinstance(inner, list):
-                for chunk in inner:
-                    if isinstance(chunk, dict) and chunk.get("type") == "text":
-                        text += chunk.get("text", "")
-    return text.strip() or "No data returned."
+    from app.ceo_briefing import _extract_assistant_text, _strip_narrative
+    text = _extract_assistant_text(result)
+    if not text:
+        return "No data returned."
+    return _strip_narrative(text) or "No data returned."
 
 
 async def _run_ace_hygiene() -> dict:
@@ -555,7 +534,7 @@ async def _run_ace_hygiene() -> dict:
             logger.warning(f"ace_hygiene_mcp_failed", extra={"section": key})
             report[key] = "⚠️ MCP query failed — check Partner Central connection."
         else:
-            report[key] = _extract_mcp_text(result) or "No data returned."
+            report[key] = _parse_mcp(result)
 
     return report
 
@@ -657,14 +636,12 @@ async def webhook_instantly(request: Request):
         _save_events_to_disk(_webhook_events)
 
     if event_type in ("reply", "reply_received", "responded"):
-        await teams.post_to_sdr({
-            "text": (
-                f"**Reply Received** | {email}\n"
-                f"Campaign: {campaign_id}\n"
-                f"Reply: {reply_text[:200] if reply_text else 'no text captured'}\n\n"
-                "Awaiting classification by sdr-reply-handler."
-            )
-        })
+        await teams.notify(
+            f"Reply Received | {email}\n"
+            f"Campaign: {campaign_id}\n"
+            f"Reply: {reply_text[:200] if reply_text else 'no text captured'}\n\n"
+            "Awaiting classification by sdr-reply-handler."
+        )
 
     return {"status": "received", "event_type": event_type}
 
