@@ -106,6 +106,23 @@ curl -X POST http://localhost:8787/lead \
   }'
 ```
 
+### Step 7b - POST event to bridge
+If bridge returns {"status": "created"}, fire the lead.created event so downstream agents (reply handler, enrichment) can react:
+```bash
+curl -X POST http://localhost:8787/event \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_type": "lead.created",
+    "agent": "sdr-startup",
+    "payload": {
+      "company": "COMPANY_NAME",
+      "campaign": "startup",
+      "icp_score": SCORE
+    }
+  }'
+```
+If the event POST fails, log it and continue — do NOT retry or stop.
+
 ### Step 8 - Update MEMORY.md
 Add: COMPANY_NAME | DATE | startup | ICP SCORE
 This prevents contacting the same company twice.
