@@ -645,6 +645,38 @@ def _parse_mcp(result) -> str:
     return parse_mcp_response(result) or "No data returned."
 
 
+@app.post("/ace/funding-check")
+async def ace_funding_check_post():
+    """Run ACE funding eligibility check via Partner Central MCP.
+
+    3 parallel queries: eligible opportunities, active applications, programs.
+    Posts results to ACE Teams channel.
+
+    Called by ace-funding agent on demand.
+    """
+    from app import ace_funding
+    logger.info("ace_funding_check_started")
+    data = await ace_funding.run_funding_check()
+    await ace_funding.post_funding_to_teams(data)
+    logger.info("ace_funding_check_complete", extra={"eligible": data.get("eligible_count", 0)})
+    return {
+        "status":          "complete",
+        "date":            data.get("date", ""),
+        "eligible_count":  data.get("eligible_count", 0),
+        "action_items":    data.get("action_items", []),
+        "eligible":        data.get("eligible", ""),
+        "active":          data.get("active", ""),
+        "programs":        data.get("programs", ""),
+    }
+
+
+@app.get("/ace/funding-check")
+async def ace_funding_check_get():
+    """GET version — returns same data without posting to Teams."""
+    from app import ace_funding
+    return await ace_funding.run_funding_check()
+
+
 @app.post("/ace/sync")
 async def ace_sync_post():
     """Sync ACE stages into HubSpot (one-way: ACE → HubSpot).
