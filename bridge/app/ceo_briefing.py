@@ -201,25 +201,23 @@ async def run_briefing(stats: Optional[dict] = None) -> dict:
 # ── Teams card formatter ──────────────────────────────────────────────────────
 
 async def post_briefing_to_teams(data: dict) -> bool:
-    """Format briefing data and post to CEO channel.
-
-    Card structure:
-      Title:       CEO BRIEFING — [DATE]
-      Q2 TARGET:   facts row (target, leads today)
-      TODAY'S FOCUS: action required + closing soon + aws_actions
-      PIPELINE:    stage breakdown
-      AWS TRUTH:   confirmed vs mismatch
-      AT RISK:     deals closing within 30 days
-      FUNDING:     eligible programs
-      CO-SELL:     active AWS reps
-      WEEKLY:      Monday only
-    """
+    """Format briefing data and post to CEO channel via teams.post_to_ceo."""
     date        = data.get("date", datetime.now().strftime("%d %b %Y"))
     is_monday   = data.get("is_monday", False)
     weekly      = data.get("weekly", {})
     leads_today = data.get("leads_today", 0)
 
-    # TODAY'S FOCUS — combine urgent items
+    title = f"CLOUDIQS CEO BRIEFING — {date}"
+
+    # Facts row
+    facts = [
+        {"title": "Leads today", "value": str(leads_today)},
+        {"title": "Q2 Target",   "value": "£400,000"},
+    ]
+
+    # Build body_text with named sections
+    body_parts = []
+
     focus_parts = []
     ar = _clean(data.get("action_required", ""), 200)
     if _has_content(ar):
@@ -230,16 +228,28 @@ async def post_briefing_to_teams(data: dict) -> bool:
     cs = _clean(data.get("closing_soon", ""), 150)
     if _has_content(cs):
         focus_parts.append(f"Closing this month:\n{cs}")
-    focus_text = "\n\n".join(focus_parts) if focus_parts else "Nothing urgent today."
+    if focus_parts:
+        body_parts.append("TODAY'S FOCUS\n" + "\n\n".join(focus_parts))
 
-    body_sections = [
-        f"TODAY'S FOCUS\n{focus_text}",
-        f"PIPELINE\n{_clean(data.get('pipeline', ''), _BUDGET['pipeline'])}",
-        f"AWS TRUTH\n{_clean(data.get('aws_stage', ''), _BUDGET['aws_truth'])}",
-        f"AT RISK\n{_clean(data.get('closing_soon', ''), _BUDGET['at_risk'])}",
-        f"FUNDING\n{_clean(data.get('funding', ''), _BUDGET['funding'])}",
-        f"CO-SELL\n{_clean(data.get('cosell', ''), _BUDGET['cosell'])}",
-    ]
+    pipeline_text = _clean(data.get("pipeline", ""), _BUDGET["pipeline"])
+    if _has_content(pipeline_text):
+        body_parts.append(f"PIPELINE BY STAGE\n{pipeline_text}")
+
+    aws_text = _clean(data.get("aws_stage", ""), _BUDGET["aws_truth"])
+    if _has_content(aws_text):
+        body_parts.append(f"AWS STAGE ALIGNMENT\n{aws_text}")
+
+    risk_text = _clean(data.get("closing_soon", ""), _BUDGET["at_risk"])
+    if _has_content(risk_text):
+        body_parts.append(f"CLOSE DATE RISK — 30 DAYS\n{risk_text}")
+
+    funding_text = _clean(data.get("funding", ""), _BUDGET["funding"])
+    if _has_content(funding_text):
+        body_parts.append(f"FUNDING ELIGIBLE\n{funding_text}")
+
+    cosell_text = _clean(data.get("cosell", ""), _BUDGET["cosell"])
+    if _has_content(cosell_text):
+        body_parts.append(f"CO-SELL INTELLIGENCE\n{cosell_text}")
 
     if is_monday and weekly:
         weekly_parts = []
@@ -249,19 +259,11 @@ async def post_briefing_to_teams(data: dict) -> bool:
             ("Pipeline velocity",  "pipeline_velocity"),
         ]:
             val = _clean(weekly.get(key, ""), 120)
-            weekly_parts.append(f"{label}: {val}")
-        body_sections.append("WEEKLY FOCUS (Monday)\n" + "\n".join(weekly_parts))
+            if val:
+                weekly_parts.append(f"{label}: {val}")
+        if weekly_parts:
+            body_parts.append("WEEKLY FOCUS\n" + "\n".join(weekly_parts))
 
-    body_text = "\n\n".join(body_sections)
+    body_text = "\n\n".join(body_parts) if body_parts else "Nothing urgent today."
 
-    facts = [
-        {"title": "Q2 Target",   "value": "£400,000"},
-        {"title": "Leads today", "value": str(leads_today)},
-        {"title": "Bridge",      "value": "healthy"},
-    ]
-
-    return await teams.post_to_ceo(
-        title=f"CEO BRIEFING — {date}",
-        body_text=body_text,
-        facts=facts,
-    )
+    return await teams.post_to_ceo(title, body_text, facts=facts)

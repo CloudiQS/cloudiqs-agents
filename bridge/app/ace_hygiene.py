@@ -49,6 +49,13 @@ def _clean(text: str, budget: int) -> str:
     return truncate(cleaned, budget)
 
 
+def _has_content(text: str) -> bool:
+    """True if section has real data (not a failure/empty placeholder)."""
+    if not text:
+        return False
+    return not any(text.startswith(p) for p in ("None found", "Query failed", "No data"))
+
+
 def _count_items(text: str) -> int:
     """Rough count of bullet/numbered items or lines with content."""
     if not text or text.startswith("None found") or text.startswith("Query failed"):
@@ -219,39 +226,48 @@ async def run_hygiene() -> dict:
 # ── Teams card formatter ──────────────────────────────────────────────────────
 
 async def post_hygiene_to_teams(data: dict) -> bool:
-    """Format hygiene data and post to ACE channel.
+    """Format hygiene data and post to ACE channel via teams.post_to_ace."""
+    date         = data.get("date", datetime.now().strftime("%d %b %Y"))
+    health_score = data.get("health_score", 0)
+    health_label = data.get("health_label", "POOR")
+    action_plan  = data.get("action_plan", [])
 
-    Card structure:
-      Title:        ACE HYGIENE — [DATE] | Score: X/10 [GOOD/FAIR/POOR]
-      ACTION PLAN:  prioritised list
-      DETAILS:      action_required, stale_launched, funding, aws_stage, close_dates, cosell
-    """
-    date          = data.get("date", datetime.now().strftime("%d %b %Y"))
-    health_score  = data.get("health_score", 0)
-    health_label  = data.get("health_label", "POOR")
-    action_plan   = data.get("action_plan", [])
-
-    action_plan_text = "\n".join(f"- {a}" for a in action_plan)
-
-    detail_sections = [
-        f"ACTION PLAN\n{action_plan_text}",
-        f"ACTION REQUIRED\n{_clean(data.get('action_required', ''), _BUDGET['action_required'])}",
-        f"STALE LAUNCHED\n{_clean(data.get('stale_launched', ''), _BUDGET['stale_launched'])}",
-        f"FUNDING ELIGIBLE\n{_clean(data.get('funding_eligible', ''), _BUDGET['funding_eligible'])}",
-        f"AWS STAGE TRUTH\n{_clean(data.get('aws_stage', ''), _BUDGET['aws_stage'])}",
-        f"PAST CLOSE DATES\n{_clean(data.get('past_close_dates', ''), _BUDGET['past_close_dates'])}",
-        f"CO-SELL ACTIVE\n{_clean(data.get('cosell', ''), _BUDGET['cosell'])}",
-    ]
-
-    body_text = "\n\n".join(detail_sections)
+    title = f"ACE HYGIENE — {date} | {health_score}/10 {health_label}"
 
     facts = [
         {"title": "Health score", "value": f"{health_score}/10 ({health_label})"},
         {"title": "Date",         "value": date},
     ]
 
-    return await teams.post_to_ace(
-        title=f"ACE HYGIENE — {date} | Score: {health_score}/10 {health_label}",
-        body_text=body_text,
-        facts=facts,
-    )
+    body_parts = []
+
+    action_plan_text = "\n".join(f"- {a}" for a in action_plan) if action_plan else "No actions needed."
+    body_parts.append(f"ACTION PLAN:\n{action_plan_text}")
+
+    ar_text = _clean(data.get("action_required", ""), _BUDGET["action_required"])
+    if _has_content(ar_text):
+        body_parts.append(f"ACTION REQUIRED:\n{ar_text}")
+
+    stale_text = _clean(data.get("stale_launched", ""), _BUDGET["stale_launched"])
+    if _has_content(stale_text):
+        body_parts.append(f"STALE LAUNCHED DEALS:\n{stale_text}")
+
+    funding_text = _clean(data.get("funding_eligible", ""), _BUDGET["funding_eligible"])
+    if _has_content(funding_text):
+        body_parts.append(f"FUNDING ELIGIBLE:\n{funding_text}")
+
+    aws_text = _clean(data.get("aws_stage", ""), _BUDGET["aws_stage"])
+    if _has_content(aws_text):
+        body_parts.append(f"AWS STAGE ALIGNMENT:\n{aws_text}")
+
+    past_text = _clean(data.get("past_close_dates", ""), _BUDGET["past_close_dates"])
+    if _has_content(past_text):
+        body_parts.append(f"PAST CLOSE DATES:\n{past_text}")
+
+    cosell_text = _clean(data.get("cosell", ""), _BUDGET["cosell"])
+    if _has_content(cosell_text):
+        body_parts.append(f"CO-SELL ACTIVE:\n{cosell_text}")
+
+    body_text = "\n\n".join(body_parts)
+
+    return await teams.post_to_ace(title, body_text, facts=facts)
