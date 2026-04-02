@@ -211,43 +211,36 @@ _DATA = {
 
 
 @patch("app.teams.post_to_ceo", new_callable=AsyncMock, return_value=True)
-async def test_post_briefing_title_contains_date(mock_post):
+async def test_post_briefing_calls_post_to_ceo(mock_post):
     from app.ceo_briefing import post_briefing_to_teams
     await post_briefing_to_teams(_DATA)
-    card = mock_post.call_args[0][0]
-    body = card["attachments"][0]["content"]["body"]
-    title_block = body[0]
-    assert "CEO BRIEFING" in title_block["text"]
-    assert "02 Apr 2026" in title_block["text"]
+    mock_post.assert_called_once()
+    title = mock_post.call_args[0][0]
+    assert "CEO BRIEFING" in title
+    assert "02 Apr 2026" in title
 
 
 @patch("app.teams.post_to_ceo", new_callable=AsyncMock, return_value=True)
-async def test_post_briefing_body_contains_sections(mock_post):
-    from app.ceo_briefing import post_briefing_to_teams
-    data = dict(_DATA, action_required="No data.", closing_soon="No data.")
-    await post_briefing_to_teams(data)
-    card = mock_post.call_args[0][0]
-    body = card["attachments"][0]["content"]["body"]
-    texts = [b.get("text", "") for b in body]
-    assert any("PIPELINE" in t for t in texts)
-    assert any("ENGINE" in t for t in texts)
-
-
-@patch("app.teams.post_to_ceo", new_callable=AsyncMock, return_value=True)
-async def test_post_briefing_engine_section_uses_facts(mock_post):
+async def test_post_briefing_includes_pipeline_in_body(mock_post):
     from app.ceo_briefing import post_briefing_to_teams
     await post_briefing_to_teams(_DATA)
-    card = mock_post.call_args[0][0]
-    body = card["attachments"][0]["content"]["body"]
-    fact_sets = [b for b in body if b.get("type") == "FactSet"]
-    assert any(
-        any(f["title"] == "Leads today" and f["value"] == "12" for f in fs["facts"])
-        for fs in fact_sets
-    )
+    body_text = mock_post.call_args[0][1]
+    assert "PIPELINE" in body_text
+    assert "ENGINE" not in body_text  # ENGINE is in facts, not body
 
 
 @patch("app.teams.post_to_ceo", new_callable=AsyncMock, return_value=True)
-async def test_post_briefing_monday_weekly_section(mock_post):
+async def test_post_briefing_engine_in_facts(mock_post):
+    from app.ceo_briefing import post_briefing_to_teams
+    await post_briefing_to_teams(_DATA)
+    # facts is passed as keyword arg
+    kwargs = mock_post.call_args[1]
+    facts = kwargs.get("facts") or (mock_post.call_args[0][2] if len(mock_post.call_args[0]) > 2 else [])
+    assert any(f["title"] == "Leads today" and f["value"] == "12" for f in facts)
+
+
+@patch("app.teams.post_to_ceo", new_callable=AsyncMock, return_value=True)
+async def test_post_briefing_monday_weekly_in_body(mock_post):
     from app.ceo_briefing import post_briefing_to_teams
     data = dict(_DATA, is_monday=True, weekly={
         "close_date_cleanup": "3 overdue",
@@ -255,14 +248,5 @@ async def test_post_briefing_monday_weekly_section(mock_post):
         "pipeline_velocity": "45 days",
     })
     await post_briefing_to_teams(data)
-    card = mock_post.call_args[0][0]
-    body = card["attachments"][0]["content"]["body"]
-    texts = [b.get("text", "") for b in body]
-    assert any("WEEKLY" in t for t in texts)
-
-
-@patch("app.teams.post_to_ceo", new_callable=AsyncMock, return_value=True)
-async def test_post_briefing_routes_to_ceo_channel(mock_post):
-    from app.ceo_briefing import post_briefing_to_teams
-    await post_briefing_to_teams(_DATA)
-    mock_post.assert_called_once()
+    body_text = mock_post.call_args[0][1]
+    assert "WEEKLY" in body_text

@@ -297,6 +297,29 @@ async def stats():
     return _stats
 
 
+@app.get("/teams/test")
+async def teams_test():
+    """Post a test message to all three Teams channels.
+    Returns which format each channel accepted (adaptive or simple fallback).
+    """
+    results = {}
+    for channel, fn in [
+        ("sdr", teams.post_to_sdr),
+        ("ceo", teams.post_to_ceo),
+        ("ace", teams.post_to_ace),
+    ]:
+        ok = await fn(
+            title=f"CloudiQS Engine — test message ({channel.upper()})",
+            body_text=f"Bridge is alive. Test sent at {datetime.now().isoformat()}.",
+            facts=[
+                {"title": "Channel", "value": channel.upper()},
+                {"title": "Bridge",  "value": "7.1.0"},
+            ],
+        )
+        results[channel] = "delivered" if ok else "failed"
+    return results
+
+
 # ── Lead pipeline ─────────────────────────────────────────────────────────────
 
 @app.post("/lead")

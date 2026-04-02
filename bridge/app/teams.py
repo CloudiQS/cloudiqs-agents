@@ -1,14 +1,21 @@
 """Microsoft Teams notifications via incoming webhook.
 
-Three channel routing functions (use these, not _post directly):
-  post_to_sdr(payload)  - SDR alerts channel   (teams/webhook-url)
-  post_to_ceo(payload)  - CEO briefing channel  (teams/ceo-webhook-url)
-  post_to_ace(payload)  - ACE updates channel   (teams/ace-webhook-url)
+Three channel routing functions (use these everywhere):
+  post_to_sdr(title, body_text, facts=None, colour="0078D4")
+  post_to_ceo(title, body_text, facts=None, colour="0078D4")
+  post_to_ace(title, body_text, facts=None, colour="0078D4")
 
-Card builder:
-  _adaptive_card(body)  - wrap body items in the Adaptive Card envelope
+Channels:
+  SDR   -> teams/webhook-url
+  CEO   -> teams/ceo-webhook-url  (fallback: teams/webhook-url)
+  ACE   -> teams/ace-webhook-url  (fallback: teams/webhook-url)
 
-Legacy helpers:
+Format strategy:
+  1. Try Adaptive Card (works with new Power Automate webhook flows)
+  2. On non-200, fall back to simple {"title": ..., "text": ...} which
+     every Teams webhook format accepts
+
+Helpers:
   notify(text)      - plain text to SDR channel
   notify_lead(dict) - rich lead card to SDR channel
 """
@@ -20,21 +27,24 @@ from app.config import get_secret, is_dummy
 
 logger = logging.getLogger("bridge")
 
+# Colour constants for border/highlight
+COLOUR_GREEN = "00B050"
+COLOUR_AMBER = "FFC000"
+COLOUR_RED   = "C00000"
+COLOUR_BLUE  = "0078D4"
 
-# ── Adaptive Card envelope ────────────────────────────────────────────────────
 
-def _adaptive_card(body: list) -> dict:
-    """Wrap body elements in the Adaptive Card envelope required by Teams.
+# ── Card builder ──────────────────────────────────────────────────────────────
 
-    All Teams posts should use this format:
-      {
-        "type": "message",
-        "attachments": [{
-          "contentType": "application/vnd.microsoft.card.adaptive",
-          "content": {"$schema": "...", "type": "AdaptiveCard", "version": "1.4", "body": [...]}
-        }]
-      }
-    """
+def _build_adaptive_card(title: str, body_text: str, facts: Optional[list] = None) -> dict:
+    """Build an Adaptive Card 1.4 payload for Teams."""
+    body: list[dict] = [
+        {"type": "TextBlock", "text": title, "size": "medium", "weight": "bolder", "wrap": True},
+    ]
+    if facts:
+        body.append({"type": "FactSet", "facts": facts})
+    if body_text:
+        body.append({"type": "TextBlock", "text": body_text, "wrap": True})
     return {
         "type": "message",
         "attachments": [{
@@ -49,157 +59,147 @@ def _adaptive_card(body: list) -> dict:
     }
 
 
+def _build_simple(title: str, body_text: str) -> dict:
+    """Simple payload that every Teams webhook variant accepts."""
+    text = f"**{title}**\n\n{body_text}" if body_text else title
+    return {"title": title, "text": text}
+
+
 # ── Internal HTTP helper ──────────────────────────────────────────────────────
 
-async def _post(payload: dict, webhook_key: str = "teams/webhook-url") -> bool:
-    """POST any payload to the Teams webhook. Returns True on success."""
+async def _post_raw(payload: dict, webhook_key: str = "teams/webhook-url") -> bool:
+    """POST any payload to the Teams webhook. Returns True on 200."""
     try:
         url = get_secret(webhook_key)
     except Exception as e:
-        logger.warning("teams_webhook_url_error", extra={"error": str(e)})
+        logger.warning("teams_webhook_url_error", extra={"key": webhook_key, "error": str(e)})
         return False
     if is_dummy(url):
-        logger.warning("teams_webhook_not_configured")
+        logger.warning("teams_webhook_not_configured", extra={"key": webhook_key})
         return False
     try:
         async with httpx.AsyncClient(timeout=10) as c:
             r = await c.post(url, json=payload)
             if r.status_code == 200:
                 return True
-            logger.error("teams_post_failed", extra={"status": r.status_code})
+            logger.warning("teams_post_failed", extra={"status": r.status_code, "key": webhook_key})
     except Exception as e:
-        logger.error("teams_post_error", extra={"error": str(e)})
+        logger.error("teams_post_error", extra={"error": str(e), "key": webhook_key})
     return False
+
+
+async def _post(
+    title: str,
+    body_text: str,
+    facts: Optional[list] = None,
+    webhook_key: str = "teams/webhook-url",
+) -> bool:
+    """Post to Teams. Try Adaptive Card first, fall back to simple format."""
+    card = _build_adaptive_card(title, body_text, facts)
+    ok = await _post_raw(card, webhook_key)
+    if ok:
+        logger.info("teams_sent_adaptive", extra={"key": webhook_key})
+        return True
+    # Fallback to simple format for older Power Automate connectors
+    simple = _build_simple(title, body_text)
+    ok = await _post_raw(simple, webhook_key)
+    if ok:
+        logger.info("teams_sent_simple_fallback", extra={"key": webhook_key})
+    return ok
 
 
 # ── Named channel routing functions ──────────────────────────────────────────
 
-async def post_to_sdr(payload: dict) -> bool:
-    """Post any payload to the SDR alerts channel (teams/webhook-url)."""
-    return await _post(payload, webhook_key="teams/webhook-url")
+async def post_to_sdr(
+    title: str,
+    body_text: str = "",
+    facts: Optional[list] = None,
+    colour: str = COLOUR_BLUE,
+) -> bool:
+    """Post to the SDR alerts channel (teams/webhook-url)."""
+    return await _post(title, body_text, facts, webhook_key="teams/webhook-url")
 
 
-async def post_to_ceo(payload: dict) -> bool:
-    """Post any payload to the CEO briefing channel (teams/ceo-webhook-url).
-
-    Falls back to teams/webhook-url if the CEO secret is not configured.
-    """
+async def post_to_ceo(
+    title: str,
+    body_text: str = "",
+    facts: Optional[list] = None,
+    colour: str = COLOUR_BLUE,
+) -> bool:
+    """Post to the CEO briefing channel (teams/ceo-webhook-url, fallback to SDR)."""
     key = get_secret("teams/ceo-webhook-url")
     webhook_key = "teams/ceo-webhook-url" if not is_dummy(key) else "teams/webhook-url"
-    return await _post(payload, webhook_key=webhook_key)
+    return await _post(title, body_text, facts, webhook_key=webhook_key)
 
 
-async def post_to_ace(payload: dict) -> bool:
-    """Post any payload to the ACE updates channel (teams/ace-webhook-url).
-
-    Falls back to teams/webhook-url if the ACE secret is not configured.
-    """
+async def post_to_ace(
+    title: str,
+    body_text: str = "",
+    facts: Optional[list] = None,
+    colour: str = COLOUR_BLUE,
+) -> bool:
+    """Post to the ACE updates channel (teams/ace-webhook-url, fallback to SDR)."""
     key = get_secret("teams/ace-webhook-url")
     webhook_key = "teams/ace-webhook-url" if not is_dummy(key) else "teams/webhook-url"
-    return await _post(payload, webhook_key=webhook_key)
+    return await _post(title, body_text, facts, webhook_key=webhook_key)
 
 
-# ── Plain text notifications (replies, alerts, system events) ─────────────────
+# ── Plain text helper ─────────────────────────────────────────────────────────
 
-async def notify(text: str, webhook_key: str = "teams/webhook-url") -> bool:
-    """Send a plain-text message to Teams. Defaults to SDR channel."""
-    card = _adaptive_card([{"type": "TextBlock", "text": text, "wrap": True}])
-    return await _post(card, webhook_key=webhook_key)
+async def notify(text: str) -> bool:
+    """Send a plain text message to SDR channel."""
+    return await post_to_sdr("Alert", text)
 
 
 # ── Rich lead card ────────────────────────────────────────────────────────────
 
 async def notify_lead(lead_data: dict) -> bool:
-    """Send a structured lead card to Teams.
+    """Send a structured lead card to the SDR channel."""
+    company      = lead_data.get("company", "Unknown")
+    campaign     = (lead_data.get("campaign") or "").upper()
+    icp          = lead_data.get("icp_score", 0)
+    contact      = lead_data.get("contact", "")
+    job_title    = lead_data.get("job_title", "")
+    email_addr   = lead_data.get("email", "")
+    linkedin     = lead_data.get("linkedin_url", "")
+    website      = lead_data.get("website", "")
+    employees    = lead_data.get("employees")
+    location     = lead_data.get("location", "")
+    ch_number    = lead_data.get("companies_house_number", "")
+    signal       = lead_data.get("signal", "")
+    pain         = lead_data.get("pain", "")
+    play         = lead_data.get("play", "")
+    hubspot_deal = lead_data.get("hubspot_deal_id", "")
+    instantly_id = lead_data.get("instantly_lead_id", "")
 
-    Produces an Office 365 MessageCard matching the CloudiQS lead format:
-
-        New Lead | ICP 9/10 | SWITCHER
-        ─────────────────────────────────
-        Company:         Acme Ltd
-        Website:         https://acme.com
-        Employees:       250
-        Location:        Manchester
-        Companies House: 12345678
-        ─────────────────────────────────
-        PRIMARY:         Jane Doe | Head of Engineering
-        Email:           jane@acme.com
-        LinkedIn:        https://linkedin.com/in/janedoe
-        ─────────────────────────────────
-        Signal:          3 cloud platform roles posted Feb 2026
-        Pain:            Legacy VMware estate, scaling issues
-        Play:            CloudiQS Migration Consulting — free WAR
-        ─────────────────────────────────
-        HubSpot: hs-deal-123  |  Instantly: enrolled
-    """
-    company       = lead_data.get("company", "Unknown")
-    campaign      = (lead_data.get("campaign") or "").upper()
-    icp           = lead_data.get("icp_score", 0)
-    contact       = lead_data.get("contact", "")
-    job_title     = lead_data.get("job_title", "")
-    email_addr    = lead_data.get("email", "")
-    linkedin      = lead_data.get("linkedin_url", "")
-    website       = lead_data.get("website", "")
-    employees     = lead_data.get("employees")
-    location      = lead_data.get("location", "")
-    ch_number     = lead_data.get("companies_house_number", "")
-    signal        = lead_data.get("signal", "")
-    pain          = lead_data.get("pain", "")
-    play          = lead_data.get("play", "")
-    hubspot_deal  = lead_data.get("hubspot_deal_id", "")
-    instantly_id  = lead_data.get("instantly_lead_id", "")
-
-    # ── Company facts ────────────────────────────────────────────────────────
-    company_facts: list[dict] = [{"title": "Company", "value": company}]
+    facts: list[dict] = [{"title": "Company", "value": company}]
     if website:
-        company_facts.append({"title": "Website", "value": website})
+        facts.append({"title": "Website", "value": website})
     if employees:
-        company_facts.append({"title": "Employees", "value": str(employees)})
+        facts.append({"title": "Employees", "value": str(employees)})
     if location and location not in ("GB", ""):
-        company_facts.append({"title": "Location", "value": location})
+        facts.append({"title": "Location", "value": location})
     if ch_number:
-        company_facts.append({"title": "Companies House", "value": ch_number})
+        facts.append({"title": "Companies House", "value": ch_number})
 
-    # ── Contact facts ────────────────────────────────────────────────────────
     primary = f"{contact} | {job_title}" if (contact and job_title) else contact or "Unknown"
-    contact_facts: list[dict] = [{"title": "PRIMARY", "value": primary}]
+    facts.append({"title": "PRIMARY", "value": primary})
     if email_addr:
-        contact_facts.append({"title": "Email", "value": email_addr})
+        facts.append({"title": "Email", "value": email_addr})
     if linkedin:
-        contact_facts.append({"title": "LinkedIn", "value": linkedin})
-
-    # ── Intelligence facts ───────────────────────────────────────────────────
-    intel_facts: list[dict] = []
+        facts.append({"title": "LinkedIn", "value": linkedin})
     if signal:
-        intel_facts.append({"title": "Signal", "value": signal})
+        facts.append({"title": "Signal", "value": signal})
     if pain:
-        intel_facts.append({"title": "Pain", "value": pain})
+        facts.append({"title": "Pain", "value": pain})
     if play:
-        intel_facts.append({"title": "Play", "value": play})
+        facts.append({"title": "Play", "value": play})
 
-    # ── CRM status ───────────────────────────────────────────────────────────
     crm_parts = []
     if hubspot_deal:
         crm_parts.append(f"HubSpot: {hubspot_deal}")
     crm_parts.append(f"Instantly: {'enrolled' if instantly_id else 'skipped'}")
 
-    # ── Assemble Adaptive Card ───────────────────────────────────────────────
-    body: list[dict] = [
-        {
-            "type": "TextBlock",
-            "text": f"New Lead | ICP {icp}/10 | {campaign}",
-            "size": "medium",
-            "weight": "bolder",
-        },
-        {"type": "FactSet", "facts": company_facts},
-        {"type": "FactSet", "facts": contact_facts},
-    ]
-    if intel_facts:
-        body.append({"type": "FactSet", "facts": intel_facts})
-    body.append({
-        "type": "TextBlock",
-        "text": " | ".join(crm_parts),
-        "wrap": True,
-    })
-
-    return await post_to_sdr(_adaptive_card(body))
+    title = f"New Lead | ICP {icp}/10 | {campaign}"
+    body = " | ".join(crm_parts)
+    return await post_to_sdr(title, body, facts)

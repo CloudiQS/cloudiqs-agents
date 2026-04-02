@@ -23,7 +23,6 @@ from datetime import datetime
 from typing import Optional
 
 from app import teams
-from app.teams import _adaptive_card
 
 logger = logging.getLogger("bridge")
 
@@ -263,39 +262,13 @@ async def post_briefing_to_teams(data: dict) -> bool:
         do_today_parts.append(f"Closing this month:\n{cs}")
     do_today_text = "\n\n".join(do_today_parts) if do_today_parts else "Nothing urgent today."
 
-    def _header(label: str) -> dict:
-        return {"type": "TextBlock", "text": label, "weight": "bolder"}
-
-    def _body(text: str) -> dict:
-        return {"type": "TextBlock", "text": text, "wrap": True}
-
-    body: list[dict] = [
-        {
-            "type": "TextBlock",
-            "text": f"CEO BRIEFING — {date}",
-            "size": "large",
-            "weight": "bolder",
-        },
-        _header("DO TODAY"),
-        _body(do_today_text),
-        _header("PIPELINE"),
-        _body(_clean(data.get("pipeline", ""), _BUDGET["pipeline"])),
-        _header("AWS TRUTH"),
-        _body(_clean(data.get("aws_stage", ""), _BUDGET["aws_truth"])),
-        _header("AT RISK"),
-        _body(_clean(data.get("closing_soon", ""), _BUDGET["at_risk"])),
-        _header("FUNDING"),
-        _body(_clean(data.get("funding", ""), _BUDGET["funding"])),
-        _header("CO-SELL"),
-        _body(_clean(data.get("cosell", ""), _BUDGET["cosell"])),
-        _header("ENGINE"),
-        {
-            "type": "FactSet",
-            "facts": [
-                {"title": "Leads today", "value": str(leads_today)},
-                {"title": "Bridge",      "value": "healthy"},
-            ],
-        },
+    sections = [
+        f"DO TODAY\n{do_today_text}",
+        f"PIPELINE\n{_clean(data.get('pipeline', ''), _BUDGET['pipeline'])}",
+        f"AWS TRUTH\n{_clean(data.get('aws_stage', ''), _BUDGET['aws_truth'])}",
+        f"AT RISK\n{_clean(data.get('closing_soon', ''), _BUDGET['at_risk'])}",
+        f"FUNDING\n{_clean(data.get('funding', ''), _BUDGET['funding'])}",
+        f"CO-SELL\n{_clean(data.get('cosell', ''), _BUDGET['cosell'])}",
     ]
 
     if is_monday and weekly:
@@ -307,7 +280,15 @@ async def post_briefing_to_teams(data: dict) -> bool:
         ]:
             val = _clean(weekly.get(key, ""), 120)
             weekly_parts.append(f"{label}: {val}")
-        body.append(_header("WEEKLY FOCUS (Monday)"))
-        body.append(_body("\n".join(weekly_parts)))
+        sections.append("WEEKLY FOCUS (Monday)\n" + "\n".join(weekly_parts))
 
-    return await teams.post_to_ceo(_adaptive_card(body))
+    body_text = "\n\n".join(sections)
+    engine_facts = [
+        {"title": "Leads today", "value": str(leads_today)},
+        {"title": "Bridge",      "value": "healthy"},
+    ]
+    return await teams.post_to_ceo(
+        f"CEO BRIEFING — {date}",
+        body_text,
+        facts=engine_facts,
+    )
