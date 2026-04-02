@@ -9,12 +9,12 @@ RED='\033[0;31m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-# Models — MUST use global. prefix. OpenClaw has a confirmed bug (GitHub #55642)
-# that strips the eu./us./jp. prefix before sending to Bedrock, causing
-# "invalid model identifier" errors. global. prefix is handled differently and works.
-NOVA="global.amazon.nova-lite-v1:0"
-HAIKU="global.anthropic.claude-haiku-4-5-20251001-v1:0"
-SONNET="global.anthropic.claude-sonnet-4-20250514-v1:0"
+# Models — LIVE WORKING CONFIG (do not change without testing on the instance first).
+# Provider prefix amazon-bedrock/ is required. global. prefix required (eu. is broken in
+# OpenClaw, GitHub bug #55642). These exact IDs match what is registered on the instance.
+NOVA="amazon-bedrock/global.amazon.nova-2-lite-v1:0"
+HAIKU="amazon-bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0"
+SONNET="amazon-bedrock/global.anthropic.claude-sonnet-4-6"
 
 echo -e "${YELLOW}[0/3] Preflight: verifying agents are registered...${NC}"
 AGENT_COUNT=$(openclaw agents list 2>/dev/null | grep -c "." || echo "0")
