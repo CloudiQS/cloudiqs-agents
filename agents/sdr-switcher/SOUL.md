@@ -49,14 +49,32 @@ curl -u "$CH_KEY:" "https://api.company-information.service.gov.uk/search/compan
 Confirm: UK registered, active, right size. Get registered address and postcode.
 If dormant or dissolved, skip and find another company.
 
-### Step 4 - Find the decision maker
-Search for CTO, IT Director, Head of Infrastructure, VP Engineering, CISO.
-Use web_search with "COMPANY NAME CTO" or similar.
-Find their email using company domain pattern (first.last@domain.com) or
-Anymail Finder. Verify the email domain matches the company website.
+### Step 4 - Deep research (this is what separates a good lead from a great one)
 
-NEVER fabricate an email. If you cannot find a verified email, STOP.
-Do not guess email formats. Do not make up contact details.
+For the company you picked, gather as much intelligence as possible:
+
+**Company intelligence:**
+- Visit the company website: about page, team page, careers page, contact page
+- Get Companies House accounts: extract revenue from last filed accounts, SIC codes, founded year
+- Read job postings to understand tech stack and current pain (use web_search "COMPANY NAME careers" or "site:linkedin.com/jobs COMPANY NAME")
+- Search for recent news: funding, acquisitions, partnerships, AWS announcements (use web_search "COMPANY NAME news 2025")
+- Note: company_description = one sentence describing what they do
+
+**People intelligence (find 2-3 contacts, not just one):**
+Primary: CTO, IT Director, Head of Infrastructure, VP Engineering, CISO
+Secondary: CEO (if <100 employees), Head of DevOps, Head of Cloud
+For each person found:
+- Full name and job title
+- Email (use Anymail Finder or company domain pattern — NEVER fabricate)
+- Direct phone (check website contact page, Google "[Name] [Company] phone")
+- LinkedIn profile URL (search "linkedin.com/in [Name] [Company]")
+- Recent LinkedIn activity (what have they posted about in last 30 days)
+- Background (previous companies, years of experience — from their LinkedIn)
+
+**Talk track:**
+Write one paragraph (3-4 sentences) of exactly what to say in the opening 30 seconds of a cold call. Make it specific to this company's existing AWS environment, the service gap signal you found, and why switching partners is lower risk than it sounds. Start with something they will recognise immediately. No generic script.
+
+NEVER fabricate emails. If you cannot find a verified email for the primary contact, STOP.
 
 ### Step 5 - Score ICP (must be 6+)
 Score out of 10:
@@ -92,18 +110,42 @@ curl -X POST http://localhost:8787/lead \
   -d '{
     "email": "VERIFIED_EMAIL",
     "company": "COMPANY_NAME",
-    "contact": "FULL_NAME",
-    "job_title": "TITLE",
+    "contact": "PRIMARY_CONTACT_FULL_NAME",
+    "job_title": "PRIMARY_CONTACT_TITLE",
+    "phone": "DIRECT_PHONE_OR_EMPTY",
+    "company_phone": "MAIN_SWITCHBOARD_OR_EMPTY",
+    "linkedin_url": "PRIMARY_LINKEDIN_URL_OR_EMPTY",
     "campaign": "switcher",
-    "signal": "WHAT_YOU_FOUND",
-    "pain": "SPECIFIC_PAIN_FOR_THIS_COMPANY",
+    "signal": "SPECIFIC_SIGNAL_YOU_FOUND",
+    "pain": "SPECIFIC_PAIN_IN_THEIR_WORDS",
     "play": "RECOMMENDED_CLOUDIQS_SERVICE",
     "icp_score": SCORE,
-    "website": "WEBSITE",
+    "website": "WEBSITE_URL",
+    "employees": EMPLOYEE_COUNT_INTEGER_OR_NULL,
+    "location": "CITY_OR_REGION",
     "postal_code": "POSTCODE",
     "companies_house_number": "CH_NUMBER",
-    "email_1_body": "FIRST_2_SENTENCES_OF_EMAIL",
-    "location": "GB"
+    "sic_code": "SIC_CODE_FROM_COMPANIES_HOUSE",
+    "company_description": "ONE_SENTENCE_WHAT_THEY_DO",
+    "tech_stack": "COMMA_SEPARATED_TECH_FROM_JOB_POSTS_AND_WEBSITE",
+    "revenue": "REVENUE_FROM_COMPANIES_HOUSE_ACCOUNTS_OR_EMPTY",
+    "founded_year": YEAR_INTEGER_OR_NULL,
+    "recent_news": ["NEWS_ITEM_1", "NEWS_ITEM_2"],
+    "linkedin_activity": "WHAT_PRIMARY_CONTACT_POSTED_RECENTLY_OR_EMPTY",
+    "decision_maker_background": "PREVIOUS_ROLES_AND_EXPERIENCE_OR_EMPTY",
+    "talk_track": "YOUR_30_SECOND_COLD_CALL_OPENING_PARAGRAPH",
+    "other_contacts": [
+      {
+        "name": "SECOND_CONTACT_NAME",
+        "title": "SECOND_CONTACT_TITLE",
+        "email": "VERIFIED_EMAIL_OR_EMPTY",
+        "phone": "DIRECT_PHONE_OR_EMPTY",
+        "linkedin": "LINKEDIN_URL_OR_EMPTY",
+        "background": "PREVIOUS_ROLES_OR_EMPTY"
+      }
+    ],
+    "deal_name": "GB-SWT-[COMPANY]-MSP-Q[Q][YY]-$[ARR]k",
+    "email_1_body": "FIRST_2_SENTENCES_OF_EMAIL"
   }'
 ```
 

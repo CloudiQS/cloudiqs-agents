@@ -29,6 +29,8 @@ class LeadPayload(BaseModel):
     companies_house_number: str = ""
     sic_code: str = ""
     company_news: str = ""
+    company_description: str = ""
+    founded_year: Optional[int] = None
 
     # SDR enrichment
     campaign: str = "msp"
@@ -39,6 +41,13 @@ class LeadPayload(BaseModel):
     icp_score: int = 0
     tech_stack: str = ""
     aws_services: str = ""
+
+    # Deep research intelligence
+    recent_news: Optional[list] = None          # [str, ...]
+    talk_track: str = ""
+    linkedin_activity: str = ""
+    decision_maker_background: str = ""
+    other_contacts: Optional[list] = None       # [{name, title, email, phone, linkedin, background}]
 
     # Email content
     email_1_body: str = ""

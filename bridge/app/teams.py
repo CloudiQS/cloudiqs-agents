@@ -24,6 +24,7 @@ import logging
 from typing import Optional
 import httpx
 from app.config import get_secret, is_dummy
+from app.card_builder import build_lead_card  # noqa: F401 — re-exported for callers
 
 logger = logging.getLogger("bridge")
 
@@ -52,112 +53,7 @@ def _section_header(text: str) -> dict:
     }
 
 
-# ── Lead notification card ────────────────────────────────────────────────────
-
-def build_lead_card(lead_data: dict) -> dict:
-    """Build an Adaptive Card v1.4 lead notification — plain TextBlocks with bold labels.
-
-    Returns the full Power Automate webhook payload (type: message wrapper).
-    """
-    company      = lead_data.get("company", "Unknown")
-    campaign     = (lead_data.get("campaign") or "").upper()
-    icp          = int(lead_data.get("icp_score") or 0)
-    contact      = lead_data.get("contact", "")
-    job_title    = lead_data.get("job_title", "")
-    email_addr   = lead_data.get("email", "")
-    phone        = lead_data.get("phone", "") or lead_data.get("company_phone", "")
-    linkedin     = lead_data.get("linkedin_url", "")
-    website      = lead_data.get("website", "")
-    employees    = lead_data.get("employees")
-    location     = lead_data.get("location", "")
-    ch_number    = lead_data.get("companies_house_number", "")
-    signal       = lead_data.get("signal", "")
-    pain         = lead_data.get("pain", "")
-    play         = lead_data.get("play", "")
-    hubspot_deal = lead_data.get("hubspot_deal_id", "")
-    hubspot_con  = lead_data.get("hubspot_contact_id", "")
-    instantly_id = lead_data.get("instantly_lead_id", "")
-    deal_name    = lead_data.get("deal_name", "")
-
-    body: list[dict] = []
-
-    # ── ICP-coloured header ───────────────────────────────────────────────────
-    body.append({
-        "type": "Container",
-        "style": _icp_style(icp),
-        "bleed": True,
-        "items": [{
-            "type": "TextBlock",
-            "text": f"New Lead | ICP {icp}/10 | {campaign}",
-            "weight": "bolder",
-            "size": "large",
-            "color": "light",
-        }],
-    })
-
-    def tb(text: str, **kw) -> dict:
-        return {"type": "TextBlock", "text": text, "wrap": True, **kw}
-
-    # ── Company block ─────────────────────────────────────────────────────────
-    body.append(tb(f"**Company:** {company}"))
-
-    if website:
-        url    = website if website.startswith("http") else f"https://{website}"
-        domain = url.replace("https://", "").replace("http://", "").rstrip("/")
-        body.append(tb(f"**Website:** [{domain}]({url})"))
-
-    if employees:
-        body.append(tb(f"**Employees:** {employees}"))
-
-    if location and location not in ("GB", ""):
-        body.append(tb(f"**Location:** {location}"))
-
-    if ch_number:
-        ch_url = f"https://find-and-update.company-information.service.gov.uk/company/{ch_number}"
-        body.append(tb(f"**Companies House:** [{ch_number}]({ch_url})"))
-
-    # ── Contact block ─────────────────────────────────────────────────────────
-    body.append(_sep())
-
-    primary = f"{contact} | {job_title}" if (contact and job_title) else contact or ""
-    if primary:
-        body.append(tb(f"**PRIMARY:** {primary}"))
-
-    if email_addr:
-        body.append(tb(f"**Email:** [{email_addr}](mailto:{email_addr})"))
-
-    if phone:
-        body.append(tb(f"**Phone:** [{phone}](tel:{phone})"))
-
-    if linkedin:
-        body.append(tb(f"**LinkedIn:** [{linkedin}]({linkedin})"))
-
-    # ── Why block ─────────────────────────────────────────────────────────────
-    if signal or pain or play:
-        body.append(_sep())
-        if signal:
-            body.append(tb(f"**Signal:** {signal}"))
-        if pain:
-            body.append(tb(f"**Pain:** {pain}"))
-        if play:
-            body.append(tb(f"**Play:** {play}"))
-
-    # ── CRM footer ────────────────────────────────────────────────────────────
-    if deal_name:
-        body.append(_sep())
-        body.append(tb(f"**Deal:** {deal_name}"))
-
-    crm_parts: list[str] = []
-    if hubspot_con:
-        crm_parts.append(f"HubSpot: {hubspot_con}")
-    if hubspot_deal:
-        crm_parts.append(f"Deal: {hubspot_deal}")
-    crm_parts.append(f"Instantly: {'enrolled' if instantly_id else 'skipped'}")
-
-    body.append(tb(" | ".join(crm_parts), isSubtle=True, size="small", separator=True, spacing="small"))
-
-    return _wrap_card(body)
-
+# build_lead_card is imported from app.card_builder (see top of file)
 
 # ── Multi-section report card (CEO briefing, ACE hygiene) ─────────────────────
 
