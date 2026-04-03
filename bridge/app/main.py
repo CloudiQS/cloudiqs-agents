@@ -38,7 +38,7 @@ from pythonjsonlogger import jsonlogger
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.models import LeadPayload, IngestPayload, WebhookPayload
-from app import hubspot, instantly, ace, teams, ace_notifications, ace_customer_lookup, knowledge
+from app import hubspot, instantly, ace, teams, ace_notifications, ace_customer_lookup, ace_control_plane, knowledge
 
 
 # ── Logging (structured JSON for CloudWatch) ─────────────────────────────────
@@ -794,6 +794,39 @@ async def ace_auto_create(request: Request):
         "deal_id": deal_id,
         "company": company,
     }
+
+
+@app.post("/ace/control-plane")
+async def ace_control_plane_endpoint(request: Request):
+    """ACE Control Plane — daily Alliance Lead briefing card.
+
+    Runs all 8 MCP queries in parallel and builds a control plane card
+    with 6 sections: What Happened, Your Actions Today, Where the Money Is,
+    Funding, Co-Sell Momentum, and Pipeline Snapshot.
+
+    Automatically posts the card to Teams (CEO channel).
+    Returns structured JSON for programmatic use.
+
+    Body:
+        stats: optional dict with {total_leads: int}
+
+    Always returns 200. On MCP failure sections show "No data available."
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    stats = body.get("stats") or {}
+    data = await ace_control_plane.run_control_plane(stats=stats)
+    await ace_control_plane.post_control_plane_to_teams(data)
+    return data
+
+
+@app.get("/ace/control-plane")
+async def ace_control_plane_get(request: Request):
+    """GET version — returns JSON without posting to Teams. Useful for testing."""
+    data = await ace_control_plane.run_control_plane()
+    return data
 
 
 @app.post("/ace/customer-lookup")
