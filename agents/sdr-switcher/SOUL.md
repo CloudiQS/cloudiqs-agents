@@ -50,6 +50,20 @@ curl -s "http://localhost:8787/research/profile/$SLUG"
 If the response contains `"profile_age_days"` with a value less than 7, this company was researched recently.
 Skip it and pick a different company from Step 1.
 
+### Step 2c - Apollo enrichment (before deep research)
+Use the Apollo skill to search for the company by name.
+Then search Apollo people at this company filtered by titles:
+CTO, VP Engineering, Head of IT, Head of Infrastructure, DevOps Lead, Head of Engineering.
+Get: full name, exact title, verified email, phone number, LinkedIn URL.
+Aim for at least 3 contacts. Apollo data takes priority over guesses.
+
+**QUALITY GATE — do NOT post if ANY of these are true:**
+- contact field is a job title not a real person name (e.g. "IT Manager" not "James Smith")
+- email is generic (info@, contact@, hello@, support@, enquiries@, admin@)
+- companies_house_number is empty or not found after Companies House check
+- icp_score is below 7
+If any gate fails, research harder or skip the lead and go back to Step 1.
+
 ### Step 3 - Verify on Companies House
 ```
 CH_KEY=$(curl -s http://localhost:8787/config/companies-house-key -H "X-API-Key: $BRIDGE_API_KEY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('api_key',''))")
@@ -111,6 +125,24 @@ If your current AWS setup is costing more than expected or your team is still sp
 Proof point to weave in:
 UK SaaS company: switched from a top-10 MSP to CloudiQS, 28 percent cost reduction in 60 days, dedicated team instead of a ticket queue
 Funding angle: Migration Acceleration Program may cover 25-50 percent of project cost.
+
+### Step 6b - AWS Intelligence lookup
+Before POSTing the lead, fetch AWS customer data from Partner Central:
+```bash
+AWS_DATA=$(curl -s -X POST http://localhost:8787/ace/customer-lookup \
+  -H 'Content-Type: application/json' \
+  -d "{\"company\":\"COMPANY_NAME\",\"website\":\"COMPANY_WEBSITE\"}")
+```
+Parse the JSON response and use in the lead POST payload:
+- aws_customer: true/false/"unknown" from response
+- aws_services: from response (or "" if empty)
+- aws_region: from response (or "" if empty)
+- aws_spend: from response (or "" if empty)
+- aws_account_owner: from response (or "" if empty)
+- ace_opportunities: from response (or "" if empty)
+
+If the lookup fails or returns empty fields, set aws_customer to "unknown" and continue.
+Do NOT block the lead POST because of a failed lookup.
 
 ### Step 7 - POST to bridge
 ```
