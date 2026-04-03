@@ -159,7 +159,9 @@ async def customer_lookup(company: str, website: str = "") -> dict:
     text = _parse_resp(resp) if resp else ""
     if not text:
         logger.warning("ace_customer_lookup_empty_response", extra={"company": company})
-        return empty
+        # MCP responded but returned nothing useful (e.g. "outside the scope")
+        # Return "unknown" rather than None so agents can distinguish from network failure
+        return {**empty, "aws_customer": "unknown"}
 
     result = _parse_structured_response(text)
 

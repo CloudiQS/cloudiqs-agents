@@ -243,14 +243,16 @@ async def test_customer_lookup_returns_empty_on_mcp_failure(mock_send):
 
 
 @patch("app.mcp_client.send_message", new_callable=AsyncMock, return_value={"text": ""})
-async def test_customer_lookup_returns_empty_on_blank_response(mock_send):
+async def test_customer_lookup_returns_unknown_on_blank_response(mock_send):
+    """Blank MCP response (e.g. 'outside the scope') → aws_customer='unknown', not None."""
     from app.ace_customer_lookup import customer_lookup
     result = await customer_lookup("Acme Ltd")
-    assert result["aws_customer"] is None
+    assert result["aws_customer"] == "unknown"
 
 
 @patch("app.mcp_client.send_message", new_callable=AsyncMock, return_value=None)
-async def test_customer_lookup_returns_empty_on_none_response(mock_send):
+async def test_customer_lookup_returns_unknown_on_none_response(mock_send):
+    """None MCP response (no reply) → aws_customer='unknown', empty other fields."""
     from app.ace_customer_lookup import customer_lookup
     result = await customer_lookup("Acme Ltd")
-    assert result["aws_customer"] is None
+    assert result["aws_customer"] == "unknown"
