@@ -58,6 +58,7 @@ def _wrap_card(body: list, actions: list | None = None) -> dict:
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
         "type": "AdaptiveCard",
         "version": "1.4",
+        "msteams": {"width": "Full"},
         "body": body,
     }
     if actions:
@@ -124,15 +125,25 @@ def build_lead_card(lead_data: dict) -> dict:
     body: list[dict] = []
     actions: list[dict] = []
 
-    # ── ICP-coloured header strip ─────────────────────────────────────────
+    # ── Header — readable on any background ──────────────────────────────
+    icp_dot_color = _icp_style(icp)   # "good" | "warning" | "attention"
     body.append({
-        "type": "Container",
-        "style": _icp_style(icp),
-        "bleed": True,
-        "items": [_tb(
-            f"New Lead | ICP {icp}/10 | {campaign}",
-            weight="bolder", size="large", color="light",
-        )],
+        "type": "ColumnSet",
+        "columns": [
+            {
+                "type": "Column",
+                "width": "auto",
+                "items": [{"type": "TextBlock", "text": "●", "color": icp_dot_color, "size": "large", "weight": "bolder"}],
+            },
+            {
+                "type": "Column",
+                "width": "stretch",
+                "items": [_tb(
+                    f"NEW LEAD  |  ICP {icp}/10  |  {campaign}",
+                    weight="bolder", size="large", color="accent",
+                )],
+            },
+        ],
     })
 
     # ── COMPANY ───────────────────────────────────────────────────────────
@@ -172,7 +183,7 @@ def build_lead_card(lead_data: dict) -> dict:
         body.append(_tb(f"Revenue: {revenue}", spacing="none"))
 
     if comp_phone:
-        body.append(_tb(f"[{comp_phone}](tel:{comp_phone})", spacing="none"))
+        body.append(_tb(f"📞 {comp_phone}", spacing="none"))
 
     # ── TECH STACK ────────────────────────────────────────────────────────
     if tech_stack:
@@ -199,13 +210,13 @@ def build_lead_card(lead_data: dict) -> dict:
         links: list[str] = []
         if email:
             links.append(f"[{email}](mailto:{email})")
-        if phone:
-            links.append(f"[{phone}](tel:{phone})")
         if linkedin:
             short = linkedin.replace("https://", "").replace("http://", "").rstrip("/")
             links.append(f"[{short}]({linkedin})")
         if links:
             body.append(_tb("  ·  ".join(links), spacing="none", isSubtle=True))
+        if phone:
+            body.append(_tb(f"📞 {phone}", spacing="none", isSubtle=True))
         if li_activity and name == contact:   # only for primary
             body.append(_tb(f"Recent: {li_activity}", spacing="none", isSubtle=True))
         if background:
@@ -276,7 +287,9 @@ def build_lead_card(lead_data: dict) -> dict:
     # ── ACTION BUTTONS ────────────────────────────────────────────────────
     call_number = phone or comp_phone
     if call_number:
-        actions.append(_action(f"Call {call_number}", f"tel:{call_number}"))
+        # tel: URI must not contain spaces
+        tel_uri = "tel:" + call_number.replace(" ", "")
+        actions.append(_action(f"📞 Call", tel_uri))
 
     if hubspot_deal:
         hs_url = f"https://app.hubspot.com/contacts/0/deal/{hubspot_deal}"
