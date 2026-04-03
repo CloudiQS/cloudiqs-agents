@@ -10,6 +10,7 @@ services:
       - AWS_DEFAULT_REGION=${AWS_REGION:-eu-west-1}
       - STACK_NAME=${STACK_NAME:-cloudiqs-engine}
       - DATA_DIR=/data
+      - KNOWLEDGE_TABLE=${KNOWLEDGE_TABLE:-cloudiqs-agent-log}
     volumes:
       - bridge-data:/data
     healthcheck:
