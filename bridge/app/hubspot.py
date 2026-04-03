@@ -417,7 +417,13 @@ async def update_deal_property(deal_id: str, property_name: str, value: str) -> 
 
 
 async def create_contact(lead: LeadPayload) -> Optional[str]:
-    """Create a HubSpot contact with all available fields."""
+    """Create a HubSpot contact using ONLY standard properties.
+
+    Custom properties (icp_score, tech_stack, etc.) require the property to
+    exist in HubSpot before they can be set. To avoid 400 errors we only send
+    the eight standard contact properties here. Custom properties should be
+    created via Settings → Properties before using Option B.
+    """
     headers = await _get_headers()
     if not headers:
         return None
@@ -428,32 +434,38 @@ async def create_contact(lead: LeadPayload) -> Optional[str]:
         return existing
 
     parts = lead.contact.strip().split(" ", 1) if lead.contact else ["", ""]
+
+    # Standard HubSpot contact properties — always safe to send
     props = {
-        "email":                  lead.email,
-        "firstname":              parts[0] if parts else "",
-        "lastname":               parts[1] if len(parts) > 1 else "",
-        "company":                lead.company,
-        "jobtitle":               lead.job_title,
-        "phone":                  lead.phone or lead.company_phone,
-        "website":                lead.website,
-        "city":                   lead.location,
-        "icp_score":              str(lead.icp_score) if lead.icp_score else "",
-        "signal":                 (lead.signal or "")[:200],
-        "pain_summary":           (lead.pain or "")[:500],
-        "recommended_play":       (lead.play or "")[:500],
-        "campaign_vertical":      lead.campaign,
-        "companies_house_number": lead.companies_house_number,
-        "aws_services_deployed":  (lead.aws_services or "")[:200],
-        "linkedin_url":           lead.linkedin_url,
-        # Deep research fields
-        "tech_stack":             (lead.tech_stack or "")[:300],
-        "talk_track":             (lead.talk_track or "")[:1000],
-        "dm_background":          (lead.decision_maker_background or "")[:500],
-        "li_recent_activity":     (lead.linkedin_activity or "")[:300],
-        "annual_revenue_estimate": lead.revenue or "",
-        "description":            (lead.company_description or "")[:500],
+        "email":     lead.email,
+        "firstname": parts[0] if parts else "",
+        "lastname":  parts[1] if len(parts) > 1 else "",
+        "company":   lead.company,
+        "jobtitle":  lead.job_title,
+        "phone":     lead.phone or lead.company_phone,
+        "website":   lead.website,
+        "city":      lead.location if lead.location not in ("GB", "") else "",
     }
     props = {k: v for k, v in props.items() if v}
+
+    # Log custom fields that are being skipped until custom properties are created
+    custom_skipped = {
+        "icp_score": lead.icp_score,
+        "signal": lead.signal,
+        "pain_summary": lead.pain,
+        "recommended_play": lead.play,
+        "campaign_vertical": lead.campaign,
+        "companies_house_number": lead.companies_house_number,
+        "linkedin_url": lead.linkedin_url,
+        "tech_stack": lead.tech_stack,
+        "talk_track": lead.talk_track,
+    }
+    skipped = [k for k, v in custom_skipped.items() if v]
+    if skipped:
+        logger.warning(
+            "hubspot_custom_props_skipped",
+            extra={"fields": skipped, "note": "create custom properties in HubSpot to enable"},
+        )
 
     @_retry
     async def _call():
