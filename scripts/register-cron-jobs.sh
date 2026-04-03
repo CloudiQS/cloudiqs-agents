@@ -210,8 +210,14 @@ add_job "ace-sync-morning" "30 7 * * 1-5" "Europe/London" "ace-sync" "$HAIKU" \
 add_job "ace-sync-afternoon" "30 14 * * 1-5" "Europe/London" "ace-sync" "$HAIKU" \
     "Afternoon ACE sync check."
 
-add_job "ace-hygiene-weekly" "0 6 * * 1" "Europe/London" "ace-hygiene" "$HAIKU" \
-    "Weekly ACE cleanup. Find stale opportunities (no update 30+ days), missing close dates, Action Required status, approaching deadlines. Post cleanup report to Teams."
+add_job "ace-hygiene-morning" "0 6 * * 1-5" "Europe/London" "ace-hygiene" "$HAIKU" \
+    "Morning ACE brief (06:00). Pipeline health before Steve starts work. Flag stale deals, missing close dates, Action Required status, approaching deadlines. Post to Teams."
+
+add_job "ace-hygiene-midday" "0 12 * * 1-5" "Europe/London" "ace-hygiene" "$HAIKU" \
+    "Midday ACE check (12:00). Catch any pipeline changes since morning. Flag new issues, updated stages, co-sell activity. Post to Teams."
+
+add_job "ace-hygiene-eod" "0 17 * * 1-5" "Europe/London" "ace-hygiene" "$HAIKU" \
+    "End of day ACE summary (17:00). What happened today, what is due tomorrow. Flag anything needing action before tomorrow morning. Post to Teams."
 
 add_job "ace-ao-handler-morning" "0 9 * * 1-5" "Europe/London" "ace-ao-handler" "$HAIKU" \
     "Morning check for new AWS Referrals. Query MCP for opportunities created in last 48 hours. Create HubSpot deal for each new one, fire ao_received event to trigger research pipeline."
