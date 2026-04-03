@@ -256,3 +256,64 @@ async def test_customer_lookup_returns_unknown_on_none_response(mock_send):
     from app.ace_customer_lookup import customer_lookup
     result = await customer_lookup("Acme Ltd")
     assert result["aws_customer"] == "unknown"
+
+
+# ── opp_id path (AWS Referrals) ───────────────────────────────────────────────
+
+@patch("app.mcp_client.send_message", new_callable=AsyncMock, return_value=_MCP_RESP)
+async def test_customer_lookup_uses_opp_prompt_when_opp_id_given(mock_send):
+    """When opp_id is provided the prompt references the opp_id, not company name."""
+    from app.ace_customer_lookup import customer_lookup
+    await customer_lookup("UK Tote Group", opp_id="O9876543")
+    prompt_sent = mock_send.call_args[0][0]
+    assert "O9876543" in prompt_sent
+
+
+@patch("app.mcp_client.send_message", new_callable=AsyncMock, return_value=_MCP_RESP)
+async def test_customer_lookup_opp_prompt_does_not_use_company_search(mock_send):
+    """opp_id path uses the opportunity prompt template, not the company search template."""
+    from app.ace_customer_lookup import customer_lookup
+    await customer_lookup("UK Tote Group", opp_id="O9876543")
+    prompt_sent = mock_send.call_args[0][0]
+    # Opp prompt asks for "full details for opportunity", not "For {company}"
+    assert "full details for opportunity" in prompt_sent.lower()
+    assert prompt_sent.startswith("Show me full details")
+
+
+@patch("app.mcp_client.send_message", new_callable=AsyncMock, return_value=_MCP_RESP)
+async def test_customer_lookup_opp_id_returns_parsed_fields(mock_send):
+    """opp_id path still parses the MCP response correctly."""
+    from app.ace_customer_lookup import customer_lookup
+    result = await customer_lookup("UK Tote Group", opp_id="O9876543")
+    assert result["aws_customer"] is True
+    assert result["aws_region"] == "eu-west-1"
+    assert result["aws_spend"] == "$20,000"
+
+
+@patch("app.mcp_client.send_message", new_callable=AsyncMock, return_value=_MCP_RESP)
+async def test_customer_lookup_no_opp_id_uses_company_search(mock_send):
+    """Without opp_id the company name search template is used."""
+    from app.ace_customer_lookup import customer_lookup
+    await customer_lookup("UK Tote Group")
+    prompt_sent = mock_send.call_args[0][0]
+    assert "UK Tote Group" in prompt_sent
+    # Company search template starts with "For {company},"
+    assert prompt_sent.startswith("For UK Tote Group")
+
+
+@patch("app.mcp_client.send_message", new_callable=AsyncMock, return_value=_MCP_RESP)
+async def test_customer_lookup_opp_id_ignores_website(mock_send):
+    """Website is not included in the opp_id prompt (irrelevant for direct opp lookup)."""
+    from app.ace_customer_lookup import customer_lookup
+    await customer_lookup("UK Tote Group", website="uktote.co.uk", opp_id="O9876543")
+    prompt_sent = mock_send.call_args[0][0]
+    assert "uktote.co.uk" not in prompt_sent
+
+
+@patch("app.mcp_client.send_message", new_callable=AsyncMock, side_effect=Exception("timeout"))
+async def test_customer_lookup_opp_id_returns_empty_on_mcp_failure(mock_send):
+    """opp_id path also returns empty dict on MCP failure."""
+    from app.ace_customer_lookup import customer_lookup
+    result = await customer_lookup("Acme Ltd", opp_id="O1234567")
+    assert result["aws_customer"] is None
+    assert result["aws_services"] == ""

@@ -833,13 +833,15 @@ async def ace_control_plane_get(request: Request):
 async def ace_customer_lookup_endpoint(request: Request):
     """Query Partner Central MCP for AWS intelligence on a company.
 
-    Runs two MCP queries:
-      1. ACE pipeline check — existing opportunities for this company
-      2. AWS customer profile — services, spend, region, account owner
+    When opp_id is provided (AWS Referral — opportunity already exists in Partner
+    Central), queries that opportunity directly for more accurate results.
+    When opp_id is absent (SDR-found leads), falls back to company name search.
 
     Body:
         company:  required — company name (e.g. "UK Tote Group")
-        website:  optional — domain for disambiguation (e.g. "uktotegroup.com")
+        website:  optional — domain for disambiguation (SDR leads only)
+        opp_id:   optional — ACE opportunity ID (e.g. "O1234567"); skips
+                  company name search when provided (AWS Referrals)
 
     Returns:
         aws_customer, aws_services, aws_region, aws_spend,
@@ -854,7 +856,8 @@ async def ace_customer_lookup_endpoint(request: Request):
         return JSONResponse(status_code=400, content={"error": "company is required"})
 
     website = str(body.get("website", "")).strip()
-    result = await ace_customer_lookup.customer_lookup(company, website)
+    opp_id  = str(body.get("opp_id", "")).strip()
+    result  = await ace_customer_lookup.customer_lookup(company, website, opp_id)
     result["company"] = company
     return result
 

@@ -1,9 +1,15 @@
 """
 AWS Intelligence endpoint — POST /ace/customer-lookup.
 
-Sends one structured MCP query per company that forces Partner Central
-to return key:value pairs in a fixed format. The response is parsed
-into discrete fields — no conversational AI text is stored.
+Sends one structured MCP query per company (or per opp_id for AWS Referrals)
+that forces Partner Central to return key:value pairs in a fixed format.
+The response is parsed into discrete fields — no conversational AI text is stored.
+
+When opp_id is provided (AWS-originated referral, opportunity already exists in
+Partner Central), the query targets that opportunity directly — more accurate than
+a company name search.
+
+When opp_id is absent (SDR-found leads), falls back to company name search.
 
 Returns empty fields on MCP failure — never blocks the lead pipeline.
 Agents call this during research (Step 4) and include the results in the
@@ -20,7 +26,26 @@ from app.mcp_parser import parse_mcp_response as _parse_resp, parse_structured a
 
 logger = logging.getLogger("bridge")
 
-# Fields included in the MCP structured prompt
+# Used when an ACE opportunity ID is already known (AWS Referrals)
+_OPP_PROMPT_TEMPLATE = """\
+Show me full details for opportunity {opp_id} in this exact format, one field per line. No commentary.
+
+AWS_CUSTOMER: Yes/No
+SERVICES: [comma separated list of AWS services in use]
+PRIMARY_REGION: [primary deployment region]
+MONTHLY_SPEND: $[monthly spend estimate]
+SPEND_TREND: Growing/Flat/Declining
+ACCOUNT_AGE: [years as AWS customer]
+SUPPORT_PLAN: Basic/Developer/Business/Enterprise
+ACCOUNT_OWNER: [AWS Account Owner name] ([email])
+EXISTING_ACE: {opp_id}
+PARTNER_HISTORY: [previous partner engagements or None]
+PROGRAMMES: [MAP/POC/CEI active or None]
+
+If data is not available for a field, write UNKNOWN.\
+"""
+
+# Used when searching by company name (SDR-found leads without an opp_id)
 _PROMPT_TEMPLATE = """\
 For {company}, provide the following in this exact format, one field per line. No commentary.
 
@@ -113,15 +138,24 @@ def _parse_structured_response(text: str) -> dict:
     return result
 
 
-async def customer_lookup(company: str, website: str = "") -> dict:
+async def customer_lookup(
+    company: str,
+    website: str = "",
+    opp_id: str = "",
+) -> dict:
     """Query Partner Central MCP for AWS customer intelligence.
+
+    When opp_id is provided (AWS Referral — opportunity already exists in Partner
+    Central), the query targets that opportunity directly for more accurate results.
+    When opp_id is absent (SDR-found leads), falls back to company name search.
 
     Sends a single structured prompt that forces key:value output.
     Parses the response into discrete fields — no raw AI text stored.
 
     Args:
         company:  Company name (e.g. "UK Tote Group")
-        website:  Company website domain (optional, for disambiguation)
+        website:  Company website domain (optional, used only for name-based lookup)
+        opp_id:   ACE opportunity ID (e.g. "O1234567") — skips company name search
 
     Returns:
         dict with keys:
@@ -143,22 +177,29 @@ async def customer_lookup(company: str, website: str = "") -> dict:
         "ace_opportunities": "",
     }
 
-    catalog     = _get_catalog()
-    company_ref = f"{company} ({website})" if website else company
-    prompt      = _PROMPT_TEMPLATE.format(company=company_ref)
+    catalog = _get_catalog()
+
+    # Prefer opp_id query (AWS Referrals) — more accurate than company name search
+    if opp_id:
+        prompt  = _OPP_PROMPT_TEMPLATE.format(opp_id=opp_id)
+        log_ref = opp_id
+    else:
+        company_ref = f"{company} ({website})" if website else company
+        prompt      = _PROMPT_TEMPLATE.format(company=company_ref)
+        log_ref     = company
 
     try:
         resp = await mcp_client.send_message(prompt, catalog=catalog)
     except Exception as exc:
         logger.warning(
             "ace_customer_lookup_mcp_failed",
-            extra={"company": company, "error": str(exc)},
+            extra={"ref": log_ref, "error": str(exc)},
         )
         return empty
 
     text = _parse_resp(resp) if resp else ""
     if not text:
-        logger.warning("ace_customer_lookup_empty_response", extra={"company": company})
+        logger.warning("ace_customer_lookup_empty_response", extra={"ref": log_ref})
         # MCP responded but returned nothing useful (e.g. "outside the scope")
         # Return "unknown" rather than None so agents can distinguish from network failure
         return {**empty, "aws_customer": "unknown"}
@@ -168,7 +209,8 @@ async def customer_lookup(company: str, website: str = "") -> dict:
     logger.info(
         "ace_customer_lookup_ok",
         extra={
-            "company":      company,
+            "ref":          log_ref,
+            "via_opp_id":   bool(opp_id),
             "aws_customer": result["aws_customer"],
             "aws_region":   result["aws_region"],
             "aws_spend":    result["aws_spend"],
