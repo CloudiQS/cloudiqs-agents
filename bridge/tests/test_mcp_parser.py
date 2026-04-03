@@ -108,6 +108,21 @@ def test_strip_collapses_blanks():
     assert "\n\n\n" not in result
 
 
+def test_strip_removes_this_request_requires():
+    from app.mcp_parser import strip_narrative
+    text = "This request requires me to.\nO123 | Acme | action | 5"
+    result = strip_narrative(text)
+    assert "This request requires" not in result
+    assert "O123" in result
+
+
+def test_strip_removes_deal_progression_advisor():
+    from app.mcp_parser import strip_narrative
+    text = "The deal_progression_advisor agent will help you.\nO123 data row."
+    result = strip_narrative(text)
+    assert "deal_progression_advisor" not in result
+
+
 # ── truncate ──────────────────────────────────────────────────────────────────
 
 def test_truncate_short_text_unchanged():
@@ -160,3 +175,110 @@ def test_extract_facts_strips_bullets():
     facts = extract_facts(text)
     assert any(f["title"] == "Stage" for f in facts)
     assert any(f["title"] == "Count" for f in facts)
+
+
+# ── parse_pipe_rows ───────────────────────────────────────────────────────────
+
+def test_parse_pipe_rows_basic():
+    from app.mcp_parser import parse_pipe_rows
+    text = "O123 | Acme Ltd | Missing close date | 5"
+    rows = parse_pipe_rows(text, 4)
+    assert rows == [["O123", "Acme Ltd", "Missing close date", "5"]]
+
+
+def test_parse_pipe_rows_multiple_rows():
+    from app.mcp_parser import parse_pipe_rows
+    text = "O123 | Acme | Issue A | 3\nO456 | Beta Corp | Issue B | 7"
+    rows = parse_pipe_rows(text, 4)
+    assert len(rows) == 2
+    assert rows[0][0] == "O123"
+    assert rows[1][0] == "O456"
+
+
+def test_parse_pipe_rows_strips_chatbot_lines():
+    from app.mcp_parser import parse_pipe_rows
+    text = (
+        "Let me check the pipeline.\n"
+        "O123 | Acme | Missing date | 5\n"
+        "I found 1 opportunity.\n"
+        "O456 | Beta | No ARR | 2"
+    )
+    rows = parse_pipe_rows(text, 4)
+    assert len(rows) == 2
+    assert rows[0][0] == "O123"
+    assert rows[1][0] == "O456"
+
+
+def test_parse_pipe_rows_rejects_wrong_field_count():
+    from app.mcp_parser import parse_pipe_rows
+    text = "O123 | Acme | Only three fields"
+    rows = parse_pipe_rows(text, 4)
+    assert rows == []
+
+
+def test_parse_pipe_rows_rejects_empty_field():
+    from app.mcp_parser import parse_pipe_rows
+    # Second field is blank — should be rejected
+    text = "O123 |  | Missing company | 5"
+    rows = parse_pipe_rows(text, 4)
+    assert rows == []
+
+
+def test_parse_pipe_rows_empty_input():
+    from app.mcp_parser import parse_pipe_rows
+    assert parse_pipe_rows("", 4) == []
+    assert parse_pipe_rows("   \n   ", 4) == []
+
+
+def test_parse_pipe_rows_rejects_header_row():
+    from app.mcp_parser import parse_pipe_rows
+    # Column header line — all fields are ALL_CAPS_UNDERSCORE
+    text = "OPP_ID | COMPANY | ISSUE | DAYS_REMAINING\nO123 | Acme | Missing date | 5"
+    rows = parse_pipe_rows(text, 4)
+    assert len(rows) == 1
+    assert rows[0][0] == "O123"
+
+
+def test_parse_pipe_rows_three_fields():
+    from app.mcp_parser import parse_pipe_rows
+    text = "O789 | Gamma Ltd | MAP"
+    rows = parse_pipe_rows(text, 3)
+    assert rows == [["O789", "Gamma Ltd", "MAP"]]
+
+
+def test_parse_pipe_rows_strips_whitespace_from_fields():
+    from app.mcp_parser import parse_pipe_rows
+    text = "  O123  |  Acme Ltd  |  Missing date  |  5  "
+    rows = parse_pipe_rows(text, 4)
+    assert rows == [["O123", "Acme Ltd", "Missing date", "5"]]
+
+
+def test_parse_pipe_rows_rejects_this_request_requires():
+    from app.mcp_parser import parse_pipe_rows
+    text = "This request requires | me | to | access\nO123 | Acme | action | 3"
+    rows = parse_pipe_rows(text, 4)
+    assert len(rows) == 1
+    assert rows[0][0] == "O123"
+
+
+def test_parse_pipe_rows_rejects_would_you_like():
+    from app.mcp_parser import parse_pipe_rows
+    text = "Would you like | me | to | help\nO123 | Acme | action | 3"
+    rows = parse_pipe_rows(text, 4)
+    assert len(rows) == 1
+
+
+def test_parse_pipe_rows_returns_empty_on_pure_narrative():
+    from app.mcp_parser import parse_pipe_rows
+    text = "Let me analyze this.\nI'll check the pipeline.\nHere's what I found."
+    rows = parse_pipe_rows(text, 4)
+    assert rows == []
+
+
+def test_parse_pipe_rows_mixed_field_counts_kept_separately():
+    from app.mcp_parser import parse_pipe_rows
+    text = "O123 | Acme | MAP\nO456 | Beta | POC | extra_field"
+    # Requesting 3 fields — only first row matches
+    rows = parse_pipe_rows(text, 3)
+    assert len(rows) == 1
+    assert rows[0][2] == "MAP"
