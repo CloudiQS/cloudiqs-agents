@@ -601,12 +601,19 @@ async def ensure_properties() -> None:
 
     contact_props = [
         {
+            # HubSpot v3 API does not accept "type": "bool" via the properties endpoint.
+            # Boolean checkbox properties must be created as type "enumeration" +
+            # fieldType "booleancheckbox" with explicit yes/no options.
             "name": "li_action_taken",
             "label": "LinkedIn Action Taken",
-            "type": "bool",
+            "type": "enumeration",
             "fieldType": "booleancheckbox",
             "groupName": "contactinformation",
             "description": "Set by sdr-linkedin/sdr-multi-thread after LinkedIn follow-up",
+            "options": [
+                {"label": "Yes", "value": "true",  "displayOrder": 0, "hidden": False},
+                {"label": "No",  "value": "false", "displayOrder": 1, "hidden": False},
+            ],
         },
     ]
 
