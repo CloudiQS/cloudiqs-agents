@@ -374,11 +374,11 @@ def test_build_hygiene_card_header_color_attention_at_4():
     assert header.get("color") == "attention"
 
 
-def test_build_hygiene_card_has_action_plan():
+def test_build_hygiene_card_has_do_this_today():
     from app.ace_hygiene import _build_hygiene_card
     card = _build_hygiene_card(_DATA)
     card_json = json.dumps(card)
-    assert "ACTION PLAN" in card_json
+    assert "DO THIS TODAY" in card_json
     assert "HIGH: Update past close dates" in card_json
 
 
@@ -386,7 +386,7 @@ def test_build_hygiene_card_has_health_score_factset():
     from app.ace_hygiene import _build_hygiene_card
     card = _build_hygiene_card(_DATA)
     card_json = json.dumps(card)
-    assert "Health Score" in card_json
+    assert "Pipeline Health" in card_json
     assert "Run Date" in card_json
 
 
@@ -462,11 +462,11 @@ async def test_post_hygiene_title_has_score(mock_raw):
 
 
 @patch("app.teams._post_raw", new_callable=AsyncMock, return_value=True)
-async def test_post_hygiene_body_has_action_plan(mock_raw):
+async def test_post_hygiene_body_has_do_this_today(mock_raw):
     from app.ace_hygiene import post_hygiene_to_teams
     await post_hygiene_to_teams(_DATA)
     card_json = json.dumps(mock_raw.call_args[0][0])
-    assert "ACTION PLAN" in card_json
+    assert "DO THIS TODAY" in card_json
     assert "HIGH:" in card_json
 
 
@@ -475,7 +475,7 @@ async def test_post_hygiene_has_health_score_factset(mock_raw):
     from app.ace_hygiene import post_hygiene_to_teams
     await post_hygiene_to_teams(_DATA)
     card_json = json.dumps(mock_raw.call_args[0][0])
-    assert "Health Score" in card_json
+    assert "Pipeline Health" in card_json
     assert "7/10" in card_json
 
 

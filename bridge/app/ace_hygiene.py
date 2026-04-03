@@ -69,6 +69,11 @@ _SECTION_SCHEMA: dict[str, dict] = {
         "fmt":    "{0} | {1} | Rep: {2} | {3}",
         "label":  "CO-SELL ACTIVE",
     },
+    "pipeline": {
+        "fields": 3,
+        "fmt":    "{0}: {1} deals (£{2})",
+        "label":  "PIPELINE BY STAGE",
+    },
 }
 
 # ── MCP query strings ─────────────────────────────────────────────────────────
@@ -113,6 +118,12 @@ _QUERIES: dict[str, str] = {
         "Respond with ONLY this format, one opportunity per line:\n"
         "OPP_ID | COMPANY | REP_NAME | REVENUE\n"
         "Maximum 5 results, sorted by revenue descending. "
+        "Do not include headers, explanations, greetings, or any other text."
+    ),
+    "pipeline": (
+        "List all open opportunities by stage with count and total expected revenue. "
+        "Respond with ONLY this format, one stage per line:\n"
+        "STAGE_NAME | COUNT | TOTAL_REVENUE\n"
         "Do not include headers, explanations, greetings, or any other text."
     ),
 }
@@ -286,6 +297,7 @@ async def run_hygiene() -> dict:
         "aws_stage":        sections.get("aws_stage", ""),
         "past_close_dates": sections.get("past_close_dates", ""),
         "cosell":           sections.get("cosell", ""),
+        "pipeline":         sections.get("pipeline", ""),
     }
 
 
@@ -294,11 +306,20 @@ async def run_hygiene() -> dict:
 def _build_hygiene_card(data: dict) -> dict:
     """Build the ACE hygiene Adaptive Card.
 
-    Uses bold TextBlock headers on the default card background.
-    No coloured Container backgrounds anywhere.
-    Layout mirrors ace_cards.py: _header_tb, _heading, _sep, _factset, _wrap_card.
+    Layout:
+      ACE HYGIENE — [date]  |  [score]/10 [label]
+      PIPELINE HEALTH (factset)
+      PIPELINE BY STAGE (stage rows)
+      DO THIS TODAY (numbered action items from action_required data)
+      ACTION REQUIRED (detail rows)
+      STALE DEALS
+      FUNDING ELIGIBLE
+      CO-SELL ACTIVE
+      [Open Partner Central] button
+
+    Bold TextBlock headers. No coloured Container backgrounds.
     """
-    from app.ace_cards import _tb, _heading, _sep, _factset, _wrap_card, _header_tb
+    from app.ace_cards import _tb, _heading, _sep, _factset, _wrap_card, _header_tb, _action
 
     date         = data.get("date", datetime.now().strftime("%d %b %Y"))
     health_score = int(data.get("health_score") or 0)
@@ -315,35 +336,61 @@ def _build_hygiene_card(data: dict) -> dict:
         color=color,
     ))
 
-    # ── Facts strip ───────────────────────────────────────────────────────────
+    # ── Pipeline health score ─────────────────────────────────────────────────
     body.append(_sep())
     body.append(_factset([
-        {"title": "Health Score", "value": f"{health_score}/10 ({health_label})"},
-        {"title": "Run Date",     "value": date},
+        {"title": "Pipeline Health", "value": f"{health_score}/10 ({health_label})"},
+        {"title": "Run Date",        "value": date},
     ]))
 
-    # ── Action plan ───────────────────────────────────────────────────────────
-    if action_plan:
+    # ── Pipeline by stage ─────────────────────────────────────────────────────
+    pipeline = data.get("pipeline", "")
+    if _has_content(pipeline):
         body.append(_sep())
-        body.append(_heading("ACTION PLAN"))
-        for i, action in enumerate(action_plan, 1):
-            body.append(_tb(f"{i}. {action}", spacing="none" if i > 1 else "small"))
+        body.append(_heading("PIPELINE BY STAGE"))
+        for row in [r for r in pipeline.split("\n") if r.strip()][:8]:
+            body.append(_tb(row, spacing="none"))
+
+    # ── DO THIS TODAY (top action_required items as numbered list) ────────────
+    ar_text = data.get("action_required", "")
+    ar_rows = [r for r in ar_text.split("\n") if r.strip() and "|" in r]
+    if ar_rows or action_plan:
+        body.append(_sep())
+        body.append(_heading("DO THIS TODAY"))
+        if ar_rows:
+            # ar_rows are already formatted as "OPP_ID | COMPANY | ISSUE | Xd left"
+            for i, row in enumerate(ar_rows[:5], 1):
+                body.append(_tb(f"{i}. {row}", spacing="none" if i > 1 else "small"))
+        else:
+            # Fall back to generic action plan items
+            for i, action in enumerate(action_plan[:5], 1):
+                body.append(_tb(f"{i}. {action}", spacing="none" if i > 1 else "small"))
 
     # ── Detail sections ───────────────────────────────────────────────────────
-    for section_key in _SECTION_SCHEMA:
+    section_order = [
+        ("action_required",  "ACTION REQUIRED"),
+        ("stale_launched",   "STALE DEALS"),
+        ("funding_eligible", "FUNDING ELIGIBLE"),
+        ("past_close_dates", "PAST CLOSE DATES"),
+        ("cosell",           "CO-SELL ACTIVE"),
+        ("aws_stage",        "AWS STAGE MISALIGNED"),
+    ]
+    for section_key, label in section_order:
         text = data.get(section_key, "")
         if not _has_content(text):
             continue
-
         rows = [r for r in text.split("\n") if r.strip()]
         count = len(rows)
-        label = _SECTION_SCHEMA[section_key]["label"]
         body.append(_sep())
         body.append(_heading(f"{label} ({count})" if count > 1 else label))
-        for row in rows[:8]:    # cap per section to keep card under 20 KB
+        for row in rows[:5]:
             body.append(_tb(row, spacing="none"))
 
-    return _wrap_card(body)
+    # ── Open Partner Central button ───────────────────────────────────────────
+    actions = [_action("Open Partner Central",
+                       "https://partnercentral.awspartner.com/opportunities")]
+
+    return _wrap_card(body, actions)
 
 
 async def post_hygiene_to_teams(data: dict) -> bool:
