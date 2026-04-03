@@ -42,6 +42,15 @@ Try different search queries if first attempt returns nothing useful.
 From search results, pick the single best ICP match.
 Do NOT try to process multiple companies in one run.
 
+### Step 2b - Check knowledge base (skip if researched in last 7 days)
+Before spending time on research, check if this company already has a fresh profile:
+```bash
+SLUG=$(python3 -c "import re,sys; s='COMPANY_NAME'.lower().strip(); s=re.sub(r'[&+]','and',s); s=re.sub(r'[^a-z0-9\s-]','',s); s=re.sub(r'[\s-]+','-',s); print(s.strip('-') or 'unknown')")
+curl -s "http://localhost:8787/research/profile/$SLUG"
+```
+If the response contains `"profile_age_days"` with a value less than 7, this company was researched recently.
+Skip it and pick a different company from Step 1.
+
 ### Step 3 - Verify on Companies House
 ```
 CH_KEY=$(curl -s http://localhost:8787/config/companies-house-key -H "X-API-Key: $BRIDGE_API_KEY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('api_key',''))")
@@ -159,6 +168,7 @@ curl -X POST http://localhost:8787/lead \
     "aws_account_owner": "",
     "ace_opportunities": "",
     "aws_existing_opps": "",
+    "agent": "sdr-education",
     "deal_name": "GB-EDU-[COMPANY]-CLD-Q[Q][YY]-$[ARR]k",
     "email_1_body": "FIRST_2_SENTENCES_OF_EMAIL"
   }'

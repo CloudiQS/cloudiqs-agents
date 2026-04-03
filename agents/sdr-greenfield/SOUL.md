@@ -41,6 +41,15 @@ Try different search queries if first attempt returns nothing useful.
 From search results, pick the single best ICP match.
 Do NOT try to process multiple companies in one run.
 
+### Step 2b - Check knowledge base (skip if researched in last 7 days)
+Before spending time on research, check if this company already has a fresh profile:
+```bash
+SLUG=$(python3 -c "import re,sys; s='COMPANY_NAME'.lower().strip(); s=re.sub(r'[&+]','and',s); s=re.sub(r'[^a-z0-9\s-]','',s); s=re.sub(r'[\s-]+','-',s); print(s.strip('-') or 'unknown')")
+curl -s "http://localhost:8787/research/profile/$SLUG"
+```
+If the response contains `"profile_age_days"` with a value less than 7, this company was researched recently.
+Skip it and pick a different company from Step 1.
+
 ### Step 3 - Verify on Companies House
 ```
 CH_KEY=$(curl -s http://localhost:8787/config/companies-house-key -H "X-API-Key: $BRIDGE_API_KEY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('api_key',''))")
@@ -70,6 +79,11 @@ For each person found:
 - LinkedIn profile URL (search "linkedin.com/in [Name] [Company]")
 - Recent LinkedIn activity (what have they posted about in last 30 days)
 - Background (previous companies, years of experience — from their LinkedIn)
+
+**Step 4d — Phone Numbers (find all three):**
+a. Switchboard (company_phone): website footer or /contact page main number
+b. General enquiry line (general_phone): /contact page department or enquiries number (may differ from switchboard)
+c. Decision maker direct (phone): website /team page, Apollo, or Brave search "[Name] [Company] direct phone"
 
 **Talk track:**
 Write one paragraph (3-4 sentences) of exactly what to say in the opening 30 seconds of a cold call. Make it specific to this company's on-premise or legacy infrastructure, their scaling needs, and the MAP funding angle. Start with something they will recognise immediately. No generic script.
@@ -115,6 +129,8 @@ curl -X POST http://localhost:8787/lead \
     "phone": "DIRECT_PHONE_OR_EMPTY",
     "company_phone": "MAIN_SWITCHBOARD_OR_EMPTY",
     "linkedin_url": "PRIMARY_LINKEDIN_URL_OR_EMPTY",
+    "linkedin": "PRIMARY_LINKEDIN_URL_OR_EMPTY",
+    "general_phone": "GENERAL_ENQUIRY_LINE_OR_EMPTY",
     "campaign": "greenfield",
     "signal": "SPECIFIC_SIGNAL_YOU_FOUND",
     "pain": "SPECIFIC_PAIN_IN_THEIR_WORDS",
@@ -126,7 +142,8 @@ curl -X POST http://localhost:8787/lead \
     "postal_code": "POSTCODE",
     "companies_house_number": "CH_NUMBER",
     "sic_code": "SIC_CODE_FROM_COMPANIES_HOUSE",
-    "company_description": "ONE_SENTENCE_WHAT_THEY_DO",
+    "sic_codes": "COMMA_SEPARATED_SIC_CODES_FROM_COMPANIES_HOUSE",
+    "company_description": "TWO_SENTENCE_DESCRIPTION_OF_WHAT_THEY_DO",
     "tech_stack": "COMMA_SEPARATED_TECH_FROM_JOB_POSTS_AND_WEBSITE",
     "revenue": "REVENUE_FROM_COMPANIES_HOUSE_ACCOUNTS_OR_EMPTY",
     "founded_year": YEAR_INTEGER_OR_NULL,
@@ -144,6 +161,14 @@ curl -X POST http://localhost:8787/lead \
         "background": "PREVIOUS_ROLES_OR_EMPTY"
       }
     ],
+    "aws_customer": null,
+    "aws_services": "",
+    "aws_region": "",
+    "aws_spend": "",
+    "aws_account_owner": "",
+    "ace_opportunities": "",
+    "aws_existing_opps": "",
+    "agent": "sdr-greenfield",
     "deal_name": "GB-GRN-[COMPANY]-MIG-Q[Q][YY]-$[ARR]k",
     "email_1_body": "FIRST_2_SENTENCES_OF_EMAIL"
   }'

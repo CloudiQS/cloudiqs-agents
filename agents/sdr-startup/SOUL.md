@@ -41,6 +41,15 @@ Try different search queries if first attempt returns nothing useful.
 From search results, pick the single best ICP match.
 Do NOT try to process multiple companies in one run.
 
+### Step 2b - Check knowledge base (skip if researched in last 7 days)
+Before spending time on research, check if this company already has a fresh profile:
+```bash
+SLUG=$(python3 -c "import re,sys; s='COMPANY_NAME'.lower().strip(); s=re.sub(r'[&+]','and',s); s=re.sub(r'[^a-z0-9\s-]','',s); s=re.sub(r'[\s-]+','-',s); print(s.strip('-') or 'unknown')")
+curl -s "http://localhost:8787/research/profile/$SLUG"
+```
+If the response contains `"profile_age_days"` with a value less than 7, this company was researched recently.
+Skip it and pick a different company from Step 1.
+
 ### Step 3 - Verify on Companies House
 ```
 CH_KEY=$(curl -s http://localhost:8787/config/companies-house-key -H "X-API-Key: $BRIDGE_API_KEY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('api_key',''))")
@@ -114,6 +123,8 @@ curl -X POST http://localhost:8787/lead \
     "phone": "DIRECT_PHONE_OR_EMPTY",
     "company_phone": "MAIN_SWITCHBOARD_OR_EMPTY",
     "linkedin_url": "PRIMARY_LINKEDIN_URL_OR_EMPTY",
+    "linkedin": "PRIMARY_LINKEDIN_URL_OR_EMPTY",
+    "general_phone": "GENERAL_ENQUIRY_LINE_OR_EMPTY",
     "campaign": "startup",
     "signal": "SPECIFIC_SIGNAL_YOU_FOUND",
     "pain": "SPECIFIC_PAIN_IN_THEIR_WORDS",
@@ -125,6 +136,7 @@ curl -X POST http://localhost:8787/lead \
     "postal_code": "POSTCODE",
     "companies_house_number": "CH_NUMBER",
     "sic_code": "SIC_CODE_FROM_COMPANIES_HOUSE",
+    "sic_codes": "COMMA_SEPARATED_SIC_CODES_FROM_COMPANIES_HOUSE",
     "company_description": "ONE_SENTENCE_WHAT_THEY_DO",
     "tech_stack": "COMMA_SEPARATED_TECH_FROM_JOB_POSTS_AND_WEBSITE",
     "revenue": "REVENUE_FROM_COMPANIES_HOUSE_ACCOUNTS_OR_EMPTY",
@@ -143,6 +155,14 @@ curl -X POST http://localhost:8787/lead \
         "background": "PREVIOUS_ROLES_OR_EMPTY"
       }
     ],
+    "aws_customer": null,
+    "aws_services": "",
+    "aws_region": "",
+    "aws_spend": "",
+    "aws_account_owner": "",
+    "ace_opportunities": "",
+    "aws_existing_opps": "",
+    "agent": "sdr-startup",
     "deal_name": "GB-STA-[COMPANY]-ARCH-Q[Q][YY]-$[ARR]k",
     "email_1_body": "FIRST_2_SENTENCES_OF_EMAIL"
   }'
