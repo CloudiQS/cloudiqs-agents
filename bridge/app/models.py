@@ -71,6 +71,9 @@ class LeadPayload(BaseModel):
     # Deal naming (agent-generated)
     deal_name: str = ""
 
+    # Submitting agent identity (used for knowledge base event logging)
+    agent: str = ""
+
 
 class IngestPayload(BaseModel):
     """Simplified payload for S3 upload / bulk ingestion."""

@@ -32,13 +32,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, Request
+from fastapi import BackgroundTasks, FastAPI, Request
 from fastapi.responses import JSONResponse
 from pythonjsonlogger import jsonlogger
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.models import LeadPayload, IngestPayload, WebhookPayload
-from app import hubspot, instantly, ace, teams, ace_notifications, ace_customer_lookup
+from app import hubspot, instantly, ace, teams, ace_notifications, ace_customer_lookup, knowledge
 
 
 # ── Logging (structured JSON for CloudWatch) ─────────────────────────────────
@@ -383,8 +383,9 @@ async def teams_test():
 # ── Lead pipeline ─────────────────────────────────────────────────────────────
 
 @app.post("/lead")
-async def create_lead(lead: LeadPayload):
+async def create_lead(lead: LeadPayload, background_tasks: BackgroundTasks):
     """Full lead pipeline: HubSpot contact + deal + Instantly enrol + Teams notify.
+    Also writes a profile to S3 and logs a lead_created event to DynamoDB.
     ACE opportunity is NOT created here — only on Qualified stage via /ace/create.
     """
     _reset_stats_if_new_day()
@@ -423,6 +424,26 @@ async def create_lead(lead: LeadPayload):
     _stats["total_leads"] += 1
     camp = lead.campaign or "unknown"
     _stats["by_campaign"][camp] = _stats["by_campaign"].get(camp, 0) + 1
+
+    # ── Knowledge base (fire-and-forget, never delays response) ──────────
+    slug = knowledge.slugify(lead.company)
+    full_profile = {**lead.model_dump(), **result}
+    agent_name = getattr(lead, "agent", "") or "manual"
+
+    background_tasks.add_task(
+        knowledge.save_profile,
+        slug,
+        full_profile,
+    )
+    background_tasks.add_task(
+        knowledge.log_event,
+        slug,
+        "lead_created",
+        agent_name,
+        f"New lead: {lead.company} | ICP {lead.icp_score}/10 | {camp.upper()}",
+        {"icp_score": lead.icp_score, "email": lead.email},
+        lead.campaign,
+    )
 
     return result
 
@@ -527,6 +548,111 @@ async def deal_update(deal_id: str, request: Request):
         "property": prop,
         "value": value,
     }
+
+
+# ── Knowledge base / research endpoints ──────────────────────────────────────
+
+@app.get("/research/profile/{company_slug}")
+async def research_profile(company_slug: str):
+    """Return the stored S3 profile for a company slug.
+
+    Used by SDR agents to check if research is already done before repeating it.
+    Returns the profile dict with a 'profile_age_days' field added.
+    Returns 404 if no profile exists.
+
+    Example:
+        curl http://localhost:8787/research/profile/uk-tote-group
+    """
+    profile = await asyncio.to_thread(knowledge.get_profile, company_slug)
+    if not profile:
+        return JSONResponse(status_code=404, content={"error": "profile not found"})
+
+    # Add age in days so agents can decide whether to refresh
+    saved_at = profile.get("saved_at", "")
+    if saved_at:
+        try:
+            from datetime import timezone as _tz
+            saved_dt = datetime.fromisoformat(saved_at)
+            if saved_dt.tzinfo is None:
+                saved_dt = saved_dt.replace(tzinfo=_tz.utc)
+            age_days = (datetime.now(_tz.utc) - saved_dt).days
+            profile["profile_age_days"] = age_days
+        except Exception:
+            profile["profile_age_days"] = None
+
+    return profile
+
+
+@app.get("/research/slug/{company_name}")
+async def research_slug(company_name: str):
+    """Convert a company name to its knowledge base slug.
+
+    Useful for agents that need to construct a slug from a name.
+    Example:
+        curl 'http://localhost:8787/research/slug/UK%20Tote%20Group'
+        → {"company_name": "UK Tote Group", "slug": "uk-tote-group"}
+    """
+    return {
+        "company_name": company_name,
+        "slug": knowledge.slugify(company_name),
+    }
+
+
+@app.get("/research/events/{company_slug}")
+async def research_events(company_slug: str, limit: int = 20):
+    """Return the most recent events for a company slug.
+
+    Used by agents to check the history of actions taken on a company.
+    """
+    events = await asyncio.to_thread(knowledge.get_events, company_slug)
+    return {"company_slug": company_slug, "count": len(events), "events": events[:limit]}
+
+
+@app.post("/research/event")
+async def research_event(request: Request, background_tasks: BackgroundTasks):
+    """Log an agent event to the knowledge base.
+
+    Body:
+        company:      required — company name (slug derived automatically)
+        company_slug: optional — override slug if already known
+        event_type:   required — e.g. "outreach_sent", "reply_received"
+        agent:        required — agent name (e.g. "sdr-vmware")
+        summary:      required — one-line description
+        detail:       optional — dict of extra data
+        campaign:     optional — campaign vertical
+
+    Returns immediately. Write is fire-and-forget.
+    """
+    body = await request.json()
+    company     = body.get("company", "")
+    slug        = body.get("company_slug") or (knowledge.slugify(company) if company else "")
+    event_type  = body.get("event_type", "")
+    agent_name  = body.get("agent", "")
+    summary     = body.get("summary", "")
+    detail      = body.get("detail") or {}
+    campaign    = body.get("campaign", "")
+
+    if not slug or not event_type or not agent_name:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "company (or company_slug), event_type, and agent are required"},
+        )
+
+    background_tasks.add_task(
+        knowledge.log_event, slug, event_type, agent_name, summary, detail, campaign,
+    )
+    return {"status": "accepted", "company_slug": slug, "event_type": event_type}
+
+
+@app.get("/research/never-contacted/{campaign}")
+async def research_never_contacted(campaign: str):
+    """Return slugs of companies in a campaign that have not been contacted.
+
+    Used by SDR agents to find companies to research that haven't been
+    reached out to yet.
+    """
+    slugs = await asyncio.to_thread(knowledge.get_never_contacted, campaign)
+    return {"campaign": campaign, "count": len(slugs), "slugs": slugs}
 
 
 # ── ACE pipeline ──────────────────────────────────────────────────────────────
