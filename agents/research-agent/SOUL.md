@@ -86,17 +86,26 @@ If not a UK company: skip this step entirely. If Companies House API fails: log 
 
 ---
 
-## STEP 2e — AWS CUSTOMER PROFILE (MCP)
+## STEP 2e — AWS INTELLIGENCE (MCP)
+
+Call the bridge customer lookup endpoint for both an ACE pipeline check and an AWS customer profile:
 
 ```bash
-curl -s -X POST http://localhost:8787/mcp/profile \
+curl -s -X POST http://localhost:8787/ace/customer-lookup \
   -H "Content-Type: application/json" \
-  -d '{"company": "COMPANY_NAME"}'
+  -d '{"company": "COMPANY_NAME", "website": "WEBSITE_DOMAIN"}'
 ```
 
-Extract: is_customer (yes/no), services in use, spending level, account owner, engagement history.
+Response fields:
+- aws_customer: true if confirmed AWS customer, false if no profile found
+- aws_services: known AWS services in use
+- aws_region: primary deployment region
+- aws_spend: estimated monthly AWS spend
+- aws_account_owner: AWS account manager name
+- aws_existing_opps: raw ACE pipeline data
+- ace_opportunities: formatted ACE opportunity summary
 
-If MCP returns nothing: record is_customer = false. This is still useful — they are a prospect.
+If the endpoint fails or returns empty: record aws_customer = null. Not a blocker.
 
 ---
 
@@ -145,10 +154,28 @@ Build a JSON dossier with ALL findings:
   "location": "...",
   "founded": YEAR,
   "companies_house": {"number": "...", "status": "active", "sic_codes": [], "last_accounts": "...", "directors": []},
-  "decision_maker": {"name": "...", "title": "...", "email": null, "linkedin": "...", "recent_posts": [], "background": "..."},
+  "contact": "...",
+  "job_title": "...",
+  "email": "...",
+  "phone": "...",
+  "linkedin": "...",
+  "decision_maker_background": "...",
+  "linkedin_activity": "...",
+  "other_contacts": [
+    {"name": "...", "title": "...", "email": "...", "phone": "...", "linkedin": "..."},
+    {"name": "...", "title": "...", "email": "...", "phone": "...", "linkedin": "..."}
+  ],
+  "company_phone": "...",
+  "general_phone": "...",
+  "aws_customer": true,
+  "aws_services": "...",
+  "aws_region": "...",
+  "aws_spend": "...",
+  "aws_account_owner": "...",
+  "ace_opportunities": "...",
+  "aws_existing_opps": "...",
   "tech_stack": {"confirmed": [], "inferred_from_jobs": [], "cloud_status": "..."},
   "hiring": ["role 1", "role 2"],
-  "aws_profile": {"is_customer": true, "services": [], "spending": "unknown", "account_owner": "..."},
   "news": ["item 1", "item 2"],
   "pain_points": ["pain 1", "pain 2", "pain 3"],
   "email_hooks": [
@@ -169,11 +196,34 @@ Build a JSON dossier with ALL findings:
 }
 ```
 
-Save to bridge:
+Save to bridge (include all fields):
 ```bash
-curl -s -X POST http://localhost:8787/research/save \
+curl -s -X POST http://localhost:8787/lead \
   -H "Content-Type: application/json" \
-  -d '{"company": "COMPANY_NAME", "profile": { ...full dossier... }}'
+  -d '{
+    "company": "COMPANY_NAME",
+    "contact": "...",
+    "job_title": "...",
+    "email": "...",
+    "phone": "...",
+    "linkedin": "...",
+    "company_phone": "...",
+    "general_phone": "...",
+    "sic_codes": [],
+    "aws_customer": true,
+    "aws_services": "...",
+    "aws_region": "...",
+    "aws_spend": "...",
+    "aws_account_owner": "...",
+    "ace_opportunities": "...",
+    "aws_existing_opps": "...",
+    "other_contacts": [],
+    "talk_track": "...",
+    "linkedin_activity": "...",
+    "decision_maker_background": "...",
+    "recent_news": "...",
+    "profile": { "...full dossier..." }
+  }'
 ```
 
 ---
@@ -237,6 +287,9 @@ Set low_confidence: true if icp_score is 5 or 6.
 4. Never guess email addresses. If not found, leave email as null.
 5. Never send connection requests, like posts, or interact with LinkedIn. Research only.
 6. Never modify openclaw.json, run openclaw doctor, or touch the gateway.
+7. After completing research, call POST /ace/customer-lookup before compiling the dossier. Include all returned AWS fields in the POST /lead payload.
+8. Find at least 3 contacts (Priority 1 decision makers first, then Priority 2 influencers). Include all in other_contacts array.
+9. Find all three phone number types: switchboard (company_phone), general enquiry line (general_phone), decision maker direct (phone).
 
 ---
 

@@ -1,0 +1,70 @@
+{
+  "company": "UK Tote Group",
+  "company_description": "Sports betting technology and tote pool operator providing parimutuel wagering platforms",
+  "website": "https://www.uktotegroup.com",
+  "employees": 170,
+  "location": "Wigan, UK",
+  "companies_house_number": "11119798",
+  "sic_codes": "92.000 Gambling and betting activities",
+  "revenue": "12M",
+  "founded_year": "2018",
+  "tech_stack": "AWS (CloudFront, AppSync eu-west-2, WAF, S3), BetMakers Quantum, Docker, Kubernetes, PostgreSQL",
+
+  "contact": "Ronnie Lee",
+  "job_title": "Head of Engineering",
+  "email": "ronnie.lee@uktotegroup.com",
+  "phone": "+44 7700 900123",
+  "linkedin": "https://www.linkedin.com/in/ronnieblee/",
+  "decision_maker_background": "8 years infrastructure engineering. Previously Senior Platform Engineer at Betfred (3 years). Specialist in high-availability betting platforms.",
+  "linkedin_activity": "Posted 2 weeks ago about challenges scaling cloud platform team. Shared article on Kubernetes cost optimisation.",
+
+  "company_phone": "+44 1942 495001",
+  "general_phone": "+44 1942 495050",
+
+  "other_contacts": [
+    {
+      "name": "James Morton",
+      "title": "CTO",
+      "email": "james.morton@uktotegroup.com",
+      "phone": "+44 7700 900124",
+      "linkedin": "https://www.linkedin.com/in/jamesmorton/"
+    },
+    {
+      "name": "Sarah Chen",
+      "title": "VP Engineering",
+      "email": null,
+      "phone": null,
+      "linkedin": "https://www.linkedin.com/in/sarachen/"
+    },
+    {
+      "name": "David Okonkwo",
+      "title": "Infrastructure Manager",
+      "email": "david.okonkwo@uktotegroup.com",
+      "phone": null,
+      "linkedin": null
+    }
+  ],
+
+  "aws_customer": true,
+  "aws_services": "CloudFront, AppSync, WAF, S3, Lambda, RDS",
+  "aws_region": "eu-west-2",
+  "aws_spend": "$4,200/month",
+  "aws_account_owner": "Holly Ark",
+  "aws_existing_opps": "None",
+  "ace_opportunities": "No existing ACE opportunities",
+
+  "signal": "Posted 3 simultaneous cloud platform engineering roles in February 2026: Senior Cloud Platform Engineer, Senior Platform Engineer, and Engineering Manager Cloud Platform. This is their highest engineering hiring volume in 12 months, signalling their current platform team cannot cope with growth.",
+  "pain": "UK Tote Group runs a deeply integrated AWS estate (CloudFront, AppSync eu-west-2, WAF, S3) and simultaneously onboarded BetMakers Quantum software in March 2025. They are now urgently hiring 3 cloud platform roles concurrently, signalling their current managed service or internal platform capability is not scaling with their technology transformation.",
+  "play": "AWS Platform Modernisation. Free Well-Architected Review and cost optimisation assessment. No commitment. Typical savings 25 to 40 percent on AWS bill plus better security posture.",
+  "talk_track": "I saw you are hiring three cloud platform engineers at once. When a team is scaling that fast, there is usually a platform bottleneck underneath. We help companies like yours get more from their existing AWS setup, so your engineers can focus on product instead of fighting infrastructure.",
+
+  "recent_news": [
+    "Onboarded BetMakers Quantum platform, March 2025",
+    "Expanded UK Tote pool operations to 3 new racecourses",
+    "No recent funding announcements"
+  ],
+
+  "icp_score": 10,
+  "campaign": "switcher",
+  "postal_code": "WN1 1BT"
+}

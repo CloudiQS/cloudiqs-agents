@@ -72,6 +72,11 @@ For each person found:
 - Recent LinkedIn activity (what have they posted about in last 30 days)
 - Background (previous roles and experience — from their LinkedIn)
 
+**Step 4d — Phone Numbers (find all three):**
+a. Switchboard (company_phone): website footer or /contact page main number
+b. General enquiry line (general_phone): /contact page department or enquiries number (may differ from switchboard)
+c. Decision maker direct (phone): website /team page, Apollo, or Brave search "[Name] [Organisation] direct phone"
+
 **Talk track:**
 Write one paragraph (3-4 sentences) of exactly what to say in the opening 30 seconds of a cold call. Make it specific to this organisation's sector (MAT, university, or EdTech), their expansion or compliance challenge, and the DfE or JISC angle. Start with something they will recognise immediately. No generic script.
 
@@ -114,7 +119,9 @@ curl -X POST http://localhost:8787/lead \
     "job_title": "PRIMARY_CONTACT_TITLE",
     "phone": "DIRECT_PHONE_OR_EMPTY",
     "company_phone": "MAIN_SWITCHBOARD_OR_EMPTY",
+    "general_phone": "GENERAL_ENQUIRY_LINE_OR_EMPTY",
     "linkedin_url": "PRIMARY_LINKEDIN_URL_OR_EMPTY",
+    "linkedin": "PRIMARY_LINKEDIN_URL_OR_EMPTY",
     "campaign": "education",
     "signal": "SPECIFIC_SIGNAL_YOU_FOUND",
     "pain": "SPECIFIC_PAIN_IN_THEIR_WORDS",
@@ -126,7 +133,8 @@ curl -X POST http://localhost:8787/lead \
     "postal_code": "POSTCODE",
     "companies_house_number": "CH_NUMBER",
     "sic_code": "SIC_CODE_FROM_COMPANIES_HOUSE",
-    "company_description": "ONE_SENTENCE_WHAT_THEY_DO",
+    "sic_codes": "COMMA_SEPARATED_SIC_CODES_FROM_COMPANIES_HOUSE",
+    "company_description": "TWO_SENTENCE_DESCRIPTION_OF_WHAT_THEY_DO",
     "tech_stack": "COMMA_SEPARATED_TECH_FROM_JOB_POSTS_AND_WEBSITE",
     "revenue": "REVENUE_FROM_COMPANIES_HOUSE_ACCOUNTS_OR_EMPTY",
     "founded_year": YEAR_INTEGER_OR_NULL,
@@ -144,6 +152,13 @@ curl -X POST http://localhost:8787/lead \
         "background": "PREVIOUS_ROLES_OR_EMPTY"
       }
     ],
+    "aws_customer": null,
+    "aws_services": "",
+    "aws_region": "",
+    "aws_spend": "",
+    "aws_account_owner": "",
+    "ace_opportunities": "",
+    "aws_existing_opps": "",
     "deal_name": "GB-EDU-[COMPANY]-CLD-Q[Q][YY]-$[ARR]k",
     "email_1_body": "FIRST_2_SENTENCES_OF_EMAIL"
   }'

@@ -18,7 +18,9 @@ class LeadPayload(BaseModel):
     job_title: str = ""
     phone: str = ""
     company_phone: str = ""
-    linkedin_url: str = ""
+    general_phone: str = ""                      # General enquiry line (separate from switchboard)
+    linkedin: str = ""                           # Primary DM LinkedIn URL
+    linkedin_url: str = ""                       # Alias for backwards compatibility
 
     # Company data
     website: str = ""
@@ -27,10 +29,11 @@ class LeadPayload(BaseModel):
     employees: Optional[int] = None
     revenue: str = ""
     companies_house_number: str = ""
-    sic_code: str = ""
+    sic_codes: str = ""                          # From Companies House API
+    sic_code: str = ""                           # Alias for backwards compatibility
     company_news: str = ""
     company_description: str = ""
-    founded_year: Optional[int] = None
+    founded_year: Optional[str] = None           # Incorporation year (string to accept "2018")
 
     # SDR enrichment
     campaign: str = "msp"
@@ -40,7 +43,15 @@ class LeadPayload(BaseModel):
     hook: str = ""
     icp_score: int = 0
     tech_stack: str = ""
-    aws_services: str = ""
+
+    # AWS intelligence (from POST /ace/customer-lookup)
+    aws_customer: Optional[bool] = None          # True if confirmed AWS customer
+    aws_services: str = ""                        # Known AWS services in use
+    aws_region: str = ""                          # Primary deployment region
+    aws_spend: str = ""                           # Estimated monthly AWS spend
+    aws_account_owner: str = ""                   # AWS account manager name
+    aws_existing_opps: str = ""                   # Existing ACE opportunities (raw)
+    ace_opportunities: str = ""                   # Formatted ACE pipeline summary
 
     # Deep research intelligence
     recent_news: Optional[list] = None          # [str, ...]

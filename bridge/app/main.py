@@ -38,7 +38,7 @@ from pythonjsonlogger import jsonlogger
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.models import LeadPayload, IngestPayload, WebhookPayload
-from app import hubspot, instantly, ace, teams, ace_notifications
+from app import hubspot, instantly, ace, teams, ace_notifications, ace_customer_lookup
 
 
 # ── Logging (structured JSON for CloudWatch) ─────────────────────────────────
@@ -668,6 +668,36 @@ async def ace_auto_create(request: Request):
         "deal_id": deal_id,
         "company": company,
     }
+
+
+@app.post("/ace/customer-lookup")
+async def ace_customer_lookup_endpoint(request: Request):
+    """Query Partner Central MCP for AWS intelligence on a company.
+
+    Runs two MCP queries:
+      1. ACE pipeline check — existing opportunities for this company
+      2. AWS customer profile — services, spend, region, account owner
+
+    Body:
+        company:  required — company name (e.g. "UK Tote Group")
+        website:  optional — domain for disambiguation (e.g. "uktotegroup.com")
+
+    Returns:
+        aws_customer, aws_services, aws_region, aws_spend,
+        aws_account_owner, aws_existing_opps, ace_opportunities
+
+    Always returns 200. On MCP failure returns empty fields — never blocks pipeline.
+    Agents call this during research and include the results in POST /lead.
+    """
+    body = await request.json()
+    company = str(body.get("company", "")).strip()
+    if not company:
+        return JSONResponse(status_code=400, content={"error": "company is required"})
+
+    website = str(body.get("website", "")).strip()
+    result = await ace_customer_lookup.customer_lookup(company, website)
+    result["company"] = company
+    return result
 
 
 @app.post("/webhook/hubspot")
