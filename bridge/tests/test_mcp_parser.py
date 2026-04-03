@@ -282,3 +282,81 @@ def test_parse_pipe_rows_mixed_field_counts_kept_separately():
     rows = parse_pipe_rows(text, 3)
     assert len(rows) == 1
     assert rows[0][2] == "MAP"
+
+
+# ── parse_structured ──────────────────────────────────────────────────────────
+
+def test_parse_structured_basic_key_value():
+    from app.mcp_parser import parse_structured
+    text = "AWS_CUSTOMER: Yes\nSERVICES: EC2, S3"
+    result = parse_structured(text)
+    assert result["AWS_CUSTOMER"] == "Yes"
+    assert result["SERVICES"] == "EC2, S3"
+
+
+def test_parse_structured_strips_commentary():
+    from app.mcp_parser import parse_structured
+    text = "Let me analyze that.\nAWS_CUSTOMER: Yes\nI found the data."
+    result = parse_structured(text)
+    assert "AWS_CUSTOMER" in result
+    assert result["AWS_CUSTOMER"] == "Yes"
+
+
+def test_parse_structured_rejects_non_alpha_keys():
+    from app.mcp_parser import parse_structured
+    text = "123_KEY: value\nAWS_CUSTOMER: Yes"
+    result = parse_structured(text)
+    assert "AWS_CUSTOMER" in result
+    assert "123_KEY" not in result
+
+
+def test_parse_structured_skips_empty_values():
+    from app.mcp_parser import parse_structured
+    text = "AWS_CUSTOMER: \nSERVICES: EC2"
+    result = parse_structured(text)
+    assert "AWS_CUSTOMER" not in result
+    assert result["SERVICES"] == "EC2"
+
+
+def test_parse_structured_empty_text_returns_empty_dict():
+    from app.mcp_parser import parse_structured
+    assert parse_structured("") == {}
+
+
+def test_parse_structured_none_lines_ignored():
+    from app.mcp_parser import parse_structured
+    text = "AWS_CUSTOMER: Yes\nEXISTING_ACE: None"
+    result = parse_structured(text)
+    assert result["AWS_CUSTOMER"] == "Yes"
+    assert result["EXISTING_ACE"] == "None"   # stored, not filtered (caller decides)
+
+
+def test_parse_structured_uppercase_keys():
+    from app.mcp_parser import parse_structured
+    text = "primary_region: eu-west-1"
+    result = parse_structured(text)
+    assert "PRIMARY_REGION" in result
+    assert result["PRIMARY_REGION"] == "eu-west-1"
+
+
+def test_parse_structured_strips_would_you_like():
+    from app.mcp_parser import parse_structured
+    text = "Would you like me to continue?\nAWS_CUSTOMER: Yes"
+    result = parse_structured(text)
+    assert "AWS_CUSTOMER" in result
+    assert len(result) == 1
+
+
+def test_parse_structured_strips_sure_prefix():
+    from app.mcp_parser import parse_structured
+    text = "Sure, here are the results.\nSERVICES: EC2"
+    result = parse_structured(text)
+    assert "SERVICES" in result
+    assert len(result) == 1
+
+
+def test_parse_structured_handles_colons_in_value():
+    from app.mcp_parser import parse_structured
+    text = "ACCOUNT_OWNER: James O'Brien (james@amazon.com)"
+    result = parse_structured(text)
+    assert result["ACCOUNT_OWNER"] == "James O'Brien (james@amazon.com)"

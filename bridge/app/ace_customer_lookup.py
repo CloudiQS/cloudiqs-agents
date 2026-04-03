@@ -16,6 +16,7 @@ import logging
 
 from app import mcp_client
 from app.config import get_secret, is_dummy
+from app.mcp_parser import parse_mcp_response as _parse_resp, parse_structured as _parse_kv
 
 logger = logging.getLogger("bridge")
 
@@ -59,16 +60,9 @@ def _parse_structured_response(text: str) -> dict:
 
     Returns a dict with the same keys as customer_lookup() — all strings / bool.
     """
-    parsed: dict[str, str] = {}
-    for line in text.split("\n"):
-        line = line.strip()
-        if ":" not in line:
-            continue
-        key, _, value = line.partition(":")
-        key   = key.strip().upper()
-        value = value.strip()
-        if value and value.upper() != "UNKNOWN":
-            parsed[key] = value
+    # Use central parser, then filter UNKNOWN values (MCP uses UNKNOWN for missing data)
+    raw = _parse_kv(text)
+    parsed: dict[str, str] = {k: v for k, v in raw.items() if v.upper() != "UNKNOWN"}
 
     result: dict = {
         "aws_customer":      None,
@@ -162,11 +156,11 @@ async def customer_lookup(company: str, website: str = "") -> dict:
         )
         return empty
 
-    if not resp or not resp.get("text"):
+    text = _parse_resp(resp) if resp else ""
+    if not text:
         logger.warning("ace_customer_lookup_empty_response", extra={"company": company})
         return empty
 
-    text = resp["text"].strip()
     result = _parse_structured_response(text)
 
     logger.info(

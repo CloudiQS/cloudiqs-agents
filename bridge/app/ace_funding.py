@@ -5,6 +5,9 @@ Runs on demand via POST /ace/funding-check (called by ace-funding agent).
 Makes 3 Partner Central MCP queries in PARALLEL covering funding eligibility,
 active funding applications, and available funding programs.
 
+All queries use structured pipe-delimited or key:value format so responses
+are parseable data, not conversational AI text.
+
 Q2 2026 goal: claim the $60K quarterly funding wallet.
 
 Exported:
@@ -17,7 +20,7 @@ import logging
 from datetime import datetime
 
 from app import teams
-from app.mcp_parser import parse_mcp_response, strip_narrative, truncate
+from app.mcp_parser import parse_mcp_response, parse_pipe_rows, parse_structured, strip_narrative, truncate
 
 logger = logging.getLogger("bridge")
 
@@ -29,6 +32,12 @@ _BUDGET = {
 
 FUNDING_PROGRAMS = ["MAP", "POC", "CEI", "MPOPP", "Partner Launch Initiative"]
 
+# Pipe section schemas
+_PIPE_SECTIONS: dict[str, dict] = {
+    "eligible": {"fields": 4, "fmt": "{0} | {1} | {2} | {3}"},
+    "active":   {"fields": 4, "fmt": "{0} | {1} | {2} | Status: {3}"},
+}
+
 
 def _clean(text: str, budget: int) -> str:
     cleaned = strip_narrative(text) if text else ""
@@ -38,9 +47,31 @@ def _clean(text: str, budget: int) -> str:
 
 
 def _count_eligible(text: str) -> int:
-    if not text or text.startswith("None found") or text.startswith("Query failed"):
+    if not text or text.startswith("None found") or text.startswith("Query failed") or text.startswith("No data"):
         return 0
-    return sum(1 for l in text.split("\n") if l.strip() and not l.lower().startswith(("here", "no ", "none")))
+    return sum(1 for line in text.split("\n") if line.strip() and not line.lower().startswith(("here", "no ", "none")))
+
+
+def _fmt_pipe(raw: str, key: str) -> str:
+    """Parse pipe-delimited MCP response for one funding section."""
+    if not raw or raw.startswith("Query failed"):
+        return raw if raw else "No data."
+    schema = _PIPE_SECTIONS[key]
+    rows = parse_pipe_rows(raw, schema["fields"])
+    if not rows:
+        return "No data."
+    fmt = schema["fmt"]
+    return "\n".join(fmt.format(*r) for r in rows[:10])
+
+
+def _fmt_kv(raw: str) -> str:
+    """Parse key:value MCP response, format as label: value lines."""
+    if not raw or raw.startswith("Query failed"):
+        return raw if raw else "No data."
+    parsed = parse_structured(raw)
+    if not parsed:
+        return "No data."
+    return "\n".join(f"{k.replace('_', ' ').title()}: {v}" for k, v in parsed.items())
 
 
 async def _mcp(query: str) -> str:
@@ -57,21 +88,30 @@ async def _mcp(query: str) -> str:
 async def run_funding_check() -> dict:
     """Run all 3 funding MCP queries in PARALLEL.
 
+    All queries use structured formats — pipe-delimited for opportunity lists,
+    key:value for program details — so MCP cannot inject conversational text.
+
     Returns sections, eligible count, and action summary.
     """
     queries = {
         "eligible": (
-            "Which of my open opportunities at Business Validation, Technical Validation, "
-            "or Committed stage are eligible for MAP, POC credits, CEI, or MPOPP funding? "
-            "For each show opportunity ID, company name, program name, and estimated amount."
+            "List all open opportunities at Business Validation, Technical Validation, "
+            "or Committed stage eligible for MAP, POC credits, CEI, or MPOPP funding. "
+            "Respond with ONLY this format, one opportunity per line:\n"
+            "OPP_ID | COMPANY | PROGRAM | AMOUNT\n"
+            "Do not include headers, explanations, greetings, or any other text."
         ),
         "active": (
-            "List all my currently active or pending funding applications. "
-            "Show opportunity ID, company name, program, status, and amount. Be brief."
+            "List all currently active or pending funding applications. "
+            "Respond with ONLY this format, one application per line:\n"
+            "OPP_ID | COMPANY | PROGRAM | STATUS\n"
+            "Do not include headers, explanations, greetings, or any other text."
         ),
         "programs": (
-            "What MAP, POC, CEI, and MPOPP funding programs are available to me as a partner? "
-            "Show program name, eligibility criteria, and maximum funding amount. Be brief."
+            "List available MAP, POC, CEI, and MPOPP funding programs. "
+            "Respond with ONLY this format, one program per line:\n"
+            "PROGRAM_NAME: MAXIMUM_AMOUNT\n"
+            "Do not include headers, explanations, greetings, or any other text."
         ),
     }
 
@@ -85,8 +125,10 @@ async def run_funding_check() -> dict:
         if isinstance(raw, Exception):
             logger.warning("ace_funding_gather_exception", extra={"section": key, "error": str(raw)})
             sections[key] = "Query failed — check MCP connection."
+        elif key in _PIPE_SECTIONS:
+            sections[key] = _fmt_pipe(raw, key)
         else:
-            sections[key] = raw
+            sections[key] = _fmt_kv(raw)
 
     eligible_count = _count_eligible(sections.get("eligible", ""))
 
@@ -97,7 +139,7 @@ async def run_funding_check() -> dict:
             "opportunities. Target: full $60K quarterly wallet."
         )
     active_text = sections.get("active", "")
-    if active_text and not active_text.startswith("None"):
+    if active_text and not active_text.startswith("None") and not active_text.startswith("No data"):
         action_items.append("Follow up on active applications — ensure all required documents are uploaded.")
     if not action_items:
         action_items.append("No eligible opportunities found. Check stage advancement for pipeline deals.")

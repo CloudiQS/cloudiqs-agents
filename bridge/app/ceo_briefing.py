@@ -9,6 +9,10 @@ activity. Combines with today's HubSpot lead stats and Q2 target data.
 
 On Mondays, adds a weekly hygiene section (3 more parallel MCP queries).
 
+All queries use structured pipe-delimited or key:value format so responses
+are parseable data, not conversational AI text. Any commentary lines are
+stripped by parse_pipe_rows() and parse_structured().
+
 Q2 TARGET: £400,000 pipeline by 30 June 2026.
 
 GET /ceo/briefing returns the same structured data as JSON without posting.
@@ -21,14 +25,21 @@ Exported:
 """
 
 import asyncio
-import json
 import logging
-import re
 from datetime import datetime
 from typing import Optional
 
 from app import teams
-from app.mcp_parser import parse_mcp_response, strip_narrative, strip_pipe_tables, truncate, extract_facts
+from app.ace_cards import _factset, _header_tb, _heading, _sep, _tb, _wrap_card
+from app.mcp_parser import (
+    extract_facts,
+    parse_mcp_response,
+    parse_pipe_rows,
+    parse_structured,
+    strip_narrative,
+    strip_pipe_tables,
+    truncate,
+)
 
 logger = logging.getLogger("bridge")
 
@@ -37,7 +48,7 @@ Q2_PIPELINE_TARGET = 400_000   # £400K
 Q2_START = "2026-04-01"
 Q2_END   = "2026-06-30"
 
-# Per-section character budgets
+# Per-section character budgets (kept for _clean() backward compatibility)
 _BUDGET = {
     "do_today":  500,
     "pipeline":  300,
@@ -46,6 +57,15 @@ _BUDGET = {
     "funding":   280,
     "cosell":    220,
     "weekly":    400,
+}
+
+# Pipe-delimited sections: expected field count + display format
+_PIPE_SECTIONS: dict[str, dict] = {
+    "action_required": {"fields": 4, "fmt": "{0} | {1} | {2} | {3}d left"},
+    "closing_soon":    {"fields": 3, "fmt": "{0} | {1} | closes {2}"},
+    "cosell":          {"fields": 4, "fmt": "{0} | {1} | Rep: {2} | {3}"},
+    "funding":         {"fields": 3, "fmt": "{0} | {1} | {2}"},
+    "aws_actions":     {"fields": 3, "fmt": "{0} | {1} | {2}"},
 }
 
 
@@ -80,12 +100,45 @@ def _has_content(text: str) -> bool:
 
 
 def _theme_for(data: dict) -> str:
-    """Pick card border colour based on urgency."""
+    """Pick card border colour based on urgency (legacy hex colours)."""
     if _has_content(data.get("action_required", "")):
         return "C00000"   # red — AWS wants something NOW
     if _has_content(data.get("closing_soon", "")):
         return "FFC000"   # amber — deals at risk
     return "1F3D7A"        # blue — normal morning briefing
+
+
+def _card_color(data: dict) -> str:
+    """Named Adaptive Card color for CEO card header."""
+    if _has_content(data.get("action_required", "")):
+        return "attention"
+    if _has_content(data.get("closing_soon", "")):
+        return "warning"
+    return "accent"
+
+
+def _fmt_pipe(raw: str, key: str) -> str:
+    """Parse pipe-delimited MCP response for one section, format for display."""
+    if not raw or raw.startswith("Query failed"):
+        return raw if raw else "No data."
+    schema = _PIPE_SECTIONS[key]
+    rows = parse_pipe_rows(raw, schema["fields"])
+    if not rows:
+        return "No data."
+    fmt = schema["fmt"]
+    return "\n".join(fmt.format(*r) for r in rows[:10])
+
+
+def _fmt_kv(raw: str) -> str:
+    """Parse key:value MCP response, format as label: value lines."""
+    if not raw or raw.startswith("Query failed"):
+        return raw if raw else "No data."
+    parsed = parse_structured(raw)
+    if not parsed:
+        return "No data."
+    return "\n".join(
+        f"{k.replace('_', ' ').title()}: {v}" for k, v in parsed.items()
+    )
 
 
 async def _mcp(query: str) -> str:
@@ -109,44 +162,67 @@ async def run_briefing(stats: Optional[dict] = None) -> dict:
     """Run all CEO briefing queries in PARALLEL and return structured data.
 
     8 core queries run simultaneously via asyncio.gather (not sequentially).
+    All queries use structured formats — pipe-delimited for lists, key:value
+    for summaries — so MCP cannot inject conversational commentary.
+
     On Mondays, 3 additional weekly queries also run in parallel.
     Total wall-clock time: ~60-90s instead of 4-8 minutes.
     """
     is_monday = datetime.now().weekday() == 0
 
-    # ── 8 core queries (parallel) ─────────────────────────────────────────────
+    # ── 8 core queries (parallel, structured format) ──────────────────────────
     queries = {
         "pipeline": (
-            "Give me a breakdown of all my opportunities by stage with count "
-            "and total expected revenue per stage. Format as a simple table."
+            "List all open opportunities by stage with count and total expected revenue. "
+            "Respond with ONLY this format, one stage per line:\n"
+            "STAGE_NAME: COUNT opportunities, £REVENUE total\n"
+            "Do not include headers, explanations, greetings, or any other text."
         ),
         "action_required": (
             "List all opportunities with Action Required status. "
-            "For each show company name and what action AWS needs from me. Be brief."
+            "Respond with ONLY this format, one opportunity per line:\n"
+            "OPP_ID | COMPANY | ISSUE | DAYS_REMAINING\n"
+            "Do not include headers, explanations, greetings, or any other text."
         ),
         "closing_soon": (
-            "Which opportunities have target close dates within 30 days? "
-            "Show company, close date, current stage. Be brief."
+            "List open opportunities with target close dates within 30 days. "
+            "Respond with ONLY this format, one opportunity per line:\n"
+            "OPP_ID | COMPANY | CLOSE_DATE\n"
+            "Do not include headers, explanations, greetings, or any other text."
         ),
         "aws_stage": (
-            "For my Launched opportunities, compare AWS stage versus partner stage. "
-            "How many are aligned, misaligned, or have empty AWS stage?"
+            "Compare AWS stage vs partner stage for all open opportunities. "
+            "Respond with ONLY this format:\n"
+            "ALIGNED: COUNT\n"
+            "MISALIGNED: COUNT\n"
+            "NO_AWS_STAGE: COUNT\n"
+            "Do not include headers, explanations, greetings, or any other text."
         ),
         "cosell": (
-            "Which of my open opportunities have an AWS Sales Rep actively engaged? "
-            "Show top 5 by expected revenue with rep name. Be brief."
+            "List open opportunities with an active AWS Sales Rep engaged in co-sell. "
+            "Maximum 5 results, sorted by revenue descending. "
+            "Respond with ONLY this format, one opportunity per line:\n"
+            "OPP_ID | COMPANY | REP_NAME | REVENUE\n"
+            "Do not include headers, explanations, greetings, or any other text."
         ),
         "funding": (
-            "Which opportunities at Business Validation or Technical Validation are "
-            "eligible for MAP, POC, or MPOPP funding? Show company and program."
+            "List open opportunities at Business Validation, Technical Validation, "
+            "or Committed stage eligible for MAP, POC, or CEI funding. "
+            "Respond with ONLY this format, one opportunity per line:\n"
+            "OPP_ID | COMPANY | PROGRAM\n"
+            "Do not include headers, explanations, greetings, or any other text."
         ),
         "aws_actions": (
-            "For all open opportunities, which have AWS recommended actions I have "
-            "not completed? Show company and what AWS recommends. Be brief."
+            "List open opportunities with incomplete AWS recommended actions. "
+            "Respond with ONLY this format, one opportunity per line:\n"
+            "OPP_ID | COMPANY | ACTION_REQUIRED\n"
+            "Do not include headers, explanations, greetings, or any other text."
         ),
         "rep_activity": (
-            "Which AWS Sales Reps have been most active on my opportunities this month? "
-            "Show top 5 rep names with opportunity count."
+            "List the top 5 AWS Sales Reps most active on my opportunities this month. "
+            "Respond with ONLY this format, one rep per line:\n"
+            "REP_NAME: OPPORTUNITY_COUNT opportunities\n"
+            "Do not include headers, explanations, greetings, or any other text."
         ),
     }
 
@@ -160,18 +236,32 @@ async def run_briefing(stats: Optional[dict] = None) -> dict:
         if isinstance(raw, Exception):
             logger.warning("ceo_briefing_gather_exception", extra={"section": key, "error": str(raw)})
             sections[key] = "Query failed — check MCP connection."
+        elif key in _PIPE_SECTIONS:
+            sections[key] = _fmt_pipe(raw, key)
         else:
-            sections[key] = raw
+            sections[key] = _fmt_kv(raw)
 
-    # ── Monday weekly queries (parallel) ─────────────────────────────────────
+    # ── Monday weekly queries (parallel, structured format) ───────────────────
     weekly: dict = {}
     if is_monday:
         weekly_queries = {
-            "close_date_cleanup": "How many of my open opportunities have close dates in the past? List them.",
-            "closed_lost_analysis": "For my Closed Lost opportunities, what are the top 3 reasons for losing?",
+            "close_date_cleanup": (
+                "Count open opportunities with close dates in the past. "
+                "Respond with ONLY this format:\n"
+                "OVERDUE: COUNT\n"
+                "Do not include headers, explanations, or any other text."
+            ),
+            "closed_lost_analysis": (
+                "List the top 3 reasons for Closed Lost opportunities. "
+                "Respond with ONLY this format, one reason per line:\n"
+                "REASON: COUNT deals\n"
+                "Do not include headers, explanations, or any other text."
+            ),
             "pipeline_velocity": (
-                "What is the average number of days opportunities take to progress "
-                "from Qualified to Launched stage?"
+                "What is the average days from Qualified to Launched stage. "
+                "Respond with ONLY this format:\n"
+                "AVERAGE_DAYS: COUNT\n"
+                "Do not include headers, explanations, or any other text."
             ),
         }
         weekly_results = await asyncio.gather(
@@ -179,91 +269,132 @@ async def run_briefing(stats: Optional[dict] = None) -> dict:
             return_exceptions=True,
         )
         for key, raw in zip(weekly_queries.keys(), weekly_results):
-            weekly[key] = raw if not isinstance(raw, Exception) else "Query failed."
+            weekly[key] = _fmt_kv(raw) if not isinstance(raw, Exception) else "Query failed."
 
     leads_today = (stats or {}).get("total_leads", 0)
 
     return {
-        "date":           datetime.now().strftime("%d %b %Y"),
-        "is_monday":      is_monday,
-        "pipeline":       sections.get("pipeline", ""),
-        "action_required":sections.get("action_required", ""),
-        "closing_soon":   sections.get("closing_soon", ""),
-        "aws_stage":      sections.get("aws_stage", ""),
-        "cosell":         sections.get("cosell", ""),
-        "funding":        sections.get("funding", ""),
-        "aws_actions":    sections.get("aws_actions", ""),
-        "rep_activity":   sections.get("rep_activity", ""),
-        "weekly":         weekly,
-        "leads_today":    leads_today,
+        "date":            datetime.now().strftime("%d %b %Y"),
+        "is_monday":       is_monday,
+        "pipeline":        sections.get("pipeline", ""),
+        "action_required": sections.get("action_required", ""),
+        "closing_soon":    sections.get("closing_soon", ""),
+        "aws_stage":       sections.get("aws_stage", ""),
+        "cosell":          sections.get("cosell", ""),
+        "funding":         sections.get("funding", ""),
+        "aws_actions":     sections.get("aws_actions", ""),
+        "rep_activity":    sections.get("rep_activity", ""),
+        "weekly":          weekly,
+        "leads_today":     leads_today,
     }
 
 
 # ── Teams card formatter ──────────────────────────────────────────────────────
 
 async def post_briefing_to_teams(data: dict) -> bool:
-    """Build a multi-section Adaptive Card and post to CEO channel."""
+    """Build an Adaptive Card using ace_cards primitives and post to CEO channel.
+
+    Uses bold TextBlock headers on the default card background.
+    No coloured Container backgrounds anywhere.
+    """
     date        = data.get("date", datetime.now().strftime("%d %b %Y"))
     is_monday   = data.get("is_monday", False)
     weekly      = data.get("weekly", {})
     leads_today = data.get("leads_today", 0)
 
-    title = f"CLOUDIQS CEO BRIEFING — {date}"
+    ar      = data.get("action_required", "")
+    aa      = data.get("aws_actions", "")
+    cs      = data.get("closing_soon", "")
+    pipeline = data.get("pipeline", "")
+    aws     = data.get("aws_stage", "")
+    funding = data.get("funding", "")
+    cosell  = data.get("cosell", "")
+    rep     = data.get("rep_activity", "")
 
-    sections: list[dict] = []
+    color = _card_color(data)
+    body: list[dict] = []
+
+    # ── Header ────────────────────────────────────────────────────────────────
+    body.append(_header_tb(f"● CLOUDIQS CEO BRIEFING — {date}", color=color))
 
     # ── Metrics strip ─────────────────────────────────────────────────────────
-    sections.append({"heading": "", "facts": [
+    body.append(_sep())
+    body.append(_factset([
         {"title": "Leads today", "value": str(leads_today)},
         {"title": "Q2 Target",   "value": "£400,000"},
-    ]})
+    ]))
 
-    # ── TODAY'S FOCUS (attention/warning colour coding) ───────────────────────
-    focus_parts: list[str] = []
-    ar = _clean(data.get("action_required", ""), 200)
+    # ── TODAY'S FOCUS (action required + aws actions + closing soon) ──────────
+    focus_lines: list[str] = []
     if _has_content(ar):
-        focus_parts.append(f"**Action Required:**\n{ar}")
-    aa = _clean(data.get("aws_actions", ""), 150)
+        focus_lines.append("**Action Required:**")
+        focus_lines.extend(ar.split("\n")[:5])
     if _has_content(aa):
-        focus_parts.append(f"**AWS Actions:**\n{aa}")
-    cs = _clean(data.get("closing_soon", ""), 150)
+        focus_lines.append("**AWS Actions:**")
+        focus_lines.extend(aa.split("\n")[:3])
     if _has_content(cs):
-        focus_parts.append(f"**Closing this month:**\n{cs}")
-    if focus_parts:
-        style = "attention" if _has_content(ar) else "warning" if _has_content(cs) else None
-        section: dict = {"heading": "TODAY'S FOCUS", "body": "\n\n".join(focus_parts)}
-        if style:
-            section["style"] = style
-        sections.append(section)
+        focus_lines.append("**Closing this month:**")
+        focus_lines.extend(cs.split("\n")[:3])
 
-    # ── PIPELINE BY STAGE — use FactSet if key:value lines found ─────────────
-    pipeline = _clean(data.get("pipeline", ""), _BUDGET["pipeline"])
+    if focus_lines:
+        body.append(_sep())
+        body.append(_heading("TODAY'S FOCUS"))
+        for line in focus_lines:
+            body.append(_tb(line, spacing="none"))
+
+    # ── PIPELINE BY STAGE ─────────────────────────────────────────────────────
     if _has_content(pipeline):
         facts = extract_facts(pipeline)
+        body.append(_sep())
+        body.append(_heading("PIPELINE BY STAGE"))
         if facts:
-            sections.append({"heading": "PIPELINE BY STAGE", "facts": facts})
+            body.append(_factset(facts))
         else:
-            sections.append({"heading": "PIPELINE BY STAGE", "body": pipeline})
+            body.append(_tb(pipeline))
 
     # ── AWS STAGE ALIGNMENT ───────────────────────────────────────────────────
-    aws = _clean(data.get("aws_stage", ""), _BUDGET["aws_truth"])
     if _has_content(aws):
-        sections.append({"heading": "AWS STAGE ALIGNMENT", "body": aws})
+        body.append(_sep())
+        body.append(_heading("AWS STAGE ALIGNMENT"))
+        facts = extract_facts(aws)
+        if facts:
+            body.append(_factset(facts))
+        else:
+            body.append(_tb(aws))
 
     # ── CLOSE DATE RISK ───────────────────────────────────────────────────────
-    risk = _clean(data.get("closing_soon", ""), _BUDGET["at_risk"])
-    if _has_content(risk):
-        sections.append({"heading": "CLOSE DATE RISK — 30 DAYS", "body": risk})
+    if _has_content(cs):
+        body.append(_sep())
+        body.append(_heading("CLOSE DATE RISK — 30 DAYS"))
+        for row in cs.split("\n")[:5]:
+            if row.strip():
+                body.append(_tb(row, spacing="none"))
 
     # ── FUNDING ELIGIBLE ──────────────────────────────────────────────────────
-    funding = _clean(data.get("funding", ""), _BUDGET["funding"])
     if _has_content(funding):
-        sections.append({"heading": "FUNDING ELIGIBLE", "body": funding})
+        body.append(_sep())
+        body.append(_heading("FUNDING ELIGIBLE"))
+        for row in funding.split("\n")[:5]:
+            if row.strip():
+                body.append(_tb(row, spacing="none"))
 
     # ── CO-SELL INTELLIGENCE ──────────────────────────────────────────────────
-    cosell = _clean(data.get("cosell", ""), _BUDGET["cosell"])
     if _has_content(cosell):
-        sections.append({"heading": "CO-SELL INTELLIGENCE", "body": cosell})
+        body.append(_sep())
+        body.append(_heading("CO-SELL INTELLIGENCE"))
+        for row in cosell.split("\n")[:5]:
+            if row.strip():
+                body.append(_tb(row, spacing="none"))
+
+    # ── REP ACTIVITY ─────────────────────────────────────────────────────────
+    if _has_content(rep):
+        body.append(_sep())
+        body.append(_heading("REP ACTIVITY"))
+        facts = extract_facts(rep)
+        if facts:
+            body.append(_factset(facts[:5]))
+        else:
+            body.append(_tb(rep))
 
     # ── WEEKLY FOCUS (Monday only) ────────────────────────────────────────────
     if is_monday and weekly:
@@ -273,16 +404,20 @@ async def post_briefing_to_teams(data: dict) -> bool:
             ("Closed lost",        "closed_lost_analysis"),
             ("Pipeline velocity",  "pipeline_velocity"),
         ]:
-            val = _clean(weekly.get(key, ""), 120)
+            val = weekly.get(key, "")
             if val and _has_content(val):
                 weekly_parts.append(f"**{label}:** {val}")
         if weekly_parts:
-            sections.append({"heading": "WEEKLY FOCUS", "body": "\n".join(weekly_parts)})
+            body.append(_sep())
+            body.append(_heading("WEEKLY FOCUS"))
+            for part in weekly_parts:
+                body.append(_tb(part, spacing="none"))
 
-    card = teams.build_section_card(title, sections, header_style="accent")
+    card = _wrap_card(body)
     webhook_key = teams._resolve_webhook("teams/ceo-webhook-url")
     ok = await teams._post_raw(card, webhook_key)
     if not ok:
+        title  = f"CLOUDIQS CEO BRIEFING — {date}"
         simple = teams._build_simple(title, "CEO briefing ready — check Teams")
         ok = await teams._post_raw(simple, webhook_key)
     return ok

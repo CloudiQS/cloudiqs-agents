@@ -67,7 +67,8 @@ async def test_run_funding_check_no_eligible(mock_mcp):
     assert len(result["action_items"]) >= 1
 
 
-@patch("app.ace_funding._mcp", new_callable=AsyncMock, return_value="O1 Acme: MAP $25k\nO2 Beta: POC $10k")
+@patch("app.ace_funding._mcp", new_callable=AsyncMock,
+       return_value="O1 | Acme Ltd | MAP | $25,000\nO2 | Beta Corp | POC | $10,000")
 async def test_run_funding_check_action_items_include_submit(mock_mcp):
     from app.ace_funding import run_funding_check
     result = await run_funding_check()

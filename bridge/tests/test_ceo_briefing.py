@@ -249,3 +249,119 @@ async def test_post_briefing_monday_weekly_in_card(mock_raw):
     await post_briefing_to_teams(data)
     card_json = json.dumps(mock_raw.call_args[0][0])
     assert "WEEKLY" in card_json
+
+
+# ── Structured query format ───────────────────────────────────────────────────
+
+def test_queries_use_respond_with_only_format():
+    """All queries must force structured output with 'Respond with ONLY'."""
+    from app.ceo_briefing import run_briefing
+    import inspect, ast
+    src = inspect.getsource(run_briefing)
+    assert "Respond with ONLY" in src
+
+
+def test_queries_contain_no_other_text_instruction():
+    """All queries must include 'other text' instruction to suppress chatbot prose."""
+    from app.ceo_briefing import run_briefing
+    import inspect
+    src = inspect.getsource(run_briefing)
+    assert "other text" in src
+
+
+def test_pipe_sections_defined():
+    """_PIPE_SECTIONS must list the 5 pipe-delimited query keys."""
+    from app.ceo_briefing import _PIPE_SECTIONS
+    for key in ("action_required", "closing_soon", "cosell", "funding", "aws_actions"):
+        assert key in _PIPE_SECTIONS, f"Missing pipe section: {key}"
+
+
+def test_pipe_sections_have_field_counts():
+    from app.ceo_briefing import _PIPE_SECTIONS
+    for key, schema in _PIPE_SECTIONS.items():
+        assert "fields" in schema, f"Missing 'fields' in {key}"
+        assert isinstance(schema["fields"], int)
+
+
+def test_fmt_pipe_returns_no_data_on_empty():
+    from app.ceo_briefing import _fmt_pipe
+    result = _fmt_pipe("", "action_required")
+    assert "No data" in result
+
+
+def test_fmt_pipe_formats_valid_rows():
+    from app.ceo_briefing import _fmt_pipe
+    text = "O123 | Acme Ltd | Missing close date | 5"
+    result = _fmt_pipe(text, "action_required")
+    assert "O123" in result
+    assert "Acme Ltd" in result
+    assert "5d left" in result
+
+
+def test_fmt_pipe_strips_chatbot_lines():
+    from app.ceo_briefing import _fmt_pipe
+    text = "Let me check.\nO123 | Acme | Missing date | 5\nI found 1."
+    result = _fmt_pipe(text, "action_required")
+    assert "Let me" not in result
+    assert "O123" in result
+
+
+def test_fmt_kv_formats_key_value_lines():
+    from app.ceo_briefing import _fmt_kv
+    text = "ALIGNED: 8\nMISALIGNED: 2"
+    result = _fmt_kv(text)
+    assert "Aligned" in result or "ALIGNED" in result or "aligned" in result.lower()
+    assert "8" in result
+
+
+def test_fmt_kv_strips_chatbot():
+    from app.ceo_briefing import _fmt_kv
+    text = "Let me get that.\nALIGNED: 8"
+    result = _fmt_kv(text)
+    assert "Let me" not in result
+    assert "8" in result
+
+
+def test_fmt_kv_returns_no_data_on_empty():
+    from app.ceo_briefing import _fmt_kv
+    assert "No data" in _fmt_kv("")
+
+
+# ── Card: no Container backgrounds ───────────────────────────────────────────
+
+@patch("app.teams._post_raw", new_callable=AsyncMock, return_value=True)
+async def test_ceo_card_no_coloured_container_backgrounds(mock_raw):
+    import json
+    from app.ceo_briefing import post_briefing_to_teams
+    await post_briefing_to_teams(_DATA)
+    card_json = json.dumps(mock_raw.call_args[0][0])
+    # No Container element with a style attribute (which would be a colored background)
+    card = mock_raw.call_args[0][0]
+    body = card["attachments"][0]["content"]["body"]
+    for elem in body:
+        if elem.get("type") == "Container":
+            assert "style" not in elem, f"Container with style found: {elem}"
+
+
+@patch("app.teams._post_raw", new_callable=AsyncMock, return_value=True)
+async def test_ceo_card_uses_adaptive_card_format(mock_raw):
+    import json
+    from app.ceo_briefing import post_briefing_to_teams
+    await post_briefing_to_teams(_DATA)
+    card = mock_raw.call_args[0][0]
+    assert card["type"] == "message"
+    content = card["attachments"][0]["content"]
+    assert content["type"] == "AdaptiveCard"
+    assert content["version"] == "1.4"
+
+
+@patch("app.teams._post_raw", new_callable=AsyncMock, return_value=True)
+async def test_ceo_card_header_is_textblock_not_container(mock_raw):
+    import json
+    from app.ceo_briefing import post_briefing_to_teams
+    await post_briefing_to_teams(_DATA)
+    card = mock_raw.call_args[0][0]
+    body = card["attachments"][0]["content"]["body"]
+    first = body[0]
+    assert first["type"] == "TextBlock"
+    assert "CEO BRIEFING" in first["text"]

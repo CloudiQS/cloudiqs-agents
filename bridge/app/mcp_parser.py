@@ -7,6 +7,7 @@ that calls Partner Central MCP and needs clean, human-readable text.
 Public API:
   parse_mcp_response(result)               -> str
   parse_pipe_rows(text, expected_fields)   -> list[list[str]]
+  parse_structured(mcp_response)           -> dict
   strip_narrative(text)                    -> str
   truncate(text, max_chars)               -> str
   extract_facts(text)                      -> list[dict]
@@ -51,59 +52,72 @@ _CHATBOT_SUBSTRINGS: list[str] = [
 _HEADER_FIELD_RE = re.compile(r'^[A-Z][A-Z0-9_]+$')
 
 
-def parse_mcp_response(result: dict) -> str:
-    """Extract clean text from an MCP send_message response.
+def parse_mcp_response(raw_response) -> str:
+    """Extract clean text from MCP response, stripping all protocol noise.
 
-    Handles two layouts:
-      1. result['text'] is a JSON string containing {"content": [...]} blocks
-         with ASSISTANT_RESPONSE entries (standard send_message response)
-      2. result['text'] is already plain text (fallback from older parsers)
+    Handles dict or string responses. Extracts text ONLY from ASSISTANT_RESPONSE
+    and text-type content blocks. Discards serverToolUse, thinking, toolUseId,
+    and all other non-text protocol blocks. Strips AI commentary lines so only
+    data reaches the API response or Teams card. Returns empty string if nothing
+    useful remains — never returns raw JSON or session blobs.
 
-    Strips narrative, returns empty string "" on failure.
+    Args:
+        raw_response: MCP response — dict with 'content' or 'text' key,
+                      a JSON string, or plain text.
+
+    Returns:
+        Clean data text with commentary stripped, or "" if nothing useful.
     """
-    if not result:
+    if isinstance(raw_response, dict):
+        # Handle wrapper format {"text": "...", "sessionId": ..., "status": ...}
+        if raw_response.get("text"):
+            return parse_mcp_response(raw_response["text"])
+        # Handle direct content format {"content": [...blocks...]}
+        texts: list[str] = []
+        for block in raw_response.get("content", []):
+            block_type = block.get("type", "")
+            if block_type == "ASSISTANT_RESPONSE":
+                text = block.get("content", {}).get("text", "")
+                if text:
+                    texts.append(text)
+            elif block_type == "text":
+                text = block.get("text", "")
+                if text:
+                    texts.append(text)
+        raw_text = "\n".join(texts)
+    elif isinstance(raw_response, str):
+        # Try to parse as JSON first — recurse with the parsed object
+        try:
+            parsed = json.loads(raw_response)
+            return parse_mcp_response(parsed)
+        except (json.JSONDecodeError, TypeError):
+            raw_text = raw_response
+    else:
         return ""
-    raw = result.get("text", "")
-    if not raw:
-        return ""
 
-    # Attempt to parse as JSON (standard MCP send_message response format)
-    try:
-        inner = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        # Not JSON — treat the raw string as the response text
-        return strip_narrative(raw.strip())
+    # Strip commentary lines — lines starting with known chatbot phrases
+    commentary = [
+        "I'll", "I appreciate", "Let me", "I need to",
+        "This request", "Would you", "I'm the", "I specialize",
+        "However", "I can help", "Please note", "Here's what",
+        "Based on my", "I found", "I notice", "Sure,",
+        "Great question", "I understand", "I'd be happy",
+        "To help you", "What I can help with",
+        "outside the scope",
+    ]
 
-    content = inner.get("content", [])
-    if not isinstance(content, list):
-        # Some responses have a top-level "text" key
-        return strip_narrative(str(inner.get("text", raw)).strip())
-
-    parts = []
-    for block in content:
-        if not isinstance(block, dict):
+    clean_lines: list[str] = []
+    for line in raw_text.split("\n"):
+        line = line.strip()
+        if not line:
             continue
-        block_type = block.get("type", "")
-        if block_type == "ASSISTANT_RESPONSE":
-            c = block.get("content", {})
-            if isinstance(c, dict):
-                text = c.get("text", "")
-            elif isinstance(c, str):
-                text = c
-            else:
-                text = ""
-            if text:
-                parts.append(text)
-        elif block_type == "text":
-            text = block.get("text", "")
-            if text:
-                parts.append(text)
+        if any(line.startswith(c) for c in commentary):
+            continue
+        if "**What I can help with:**" in line:
+            continue
+        clean_lines.append(line)
 
-    if not parts:
-        # No recognised blocks — fall back to raw text
-        return strip_narrative(raw.strip())
-
-    return strip_narrative("\n".join(parts).strip())
+    return "\n".join(clean_lines)
 
 
 def parse_pipe_rows(text: str, expected_fields: int) -> list[list[str]]:
@@ -160,6 +174,41 @@ def parse_pipe_rows(text: str, expected_fields: int) -> list[list[str]]:
         rows.append(cleaned)
 
     return rows
+
+
+def parse_structured(mcp_response: str) -> dict:
+    """Extract key:value pairs from an MCP response string.
+
+    Strips commentary lines (lines starting with known chatbot phrases).
+    Keys must be purely alphabetic after removing underscores to be accepted.
+
+    Args:
+        mcp_response: Raw text from MCP (already extracted via parse_mcp_response).
+
+    Returns:
+        Dict of {UPPER_KEY: value} pairs. Empty dict if none found.
+    """
+    result: dict[str, str] = {}
+    commentary_words = [
+        "I'll", "Let me", "I need", "I appreciate", "Would you",
+        "This request", "I'm the", "I specialize", "However",
+        "I can help", "Please note", "Here's what", "Based on",
+        "I found", "I notice", "Let me check", "I'd be happy",
+        "Sure", "Great question", "To help you", "I understand",
+    ]
+    for line in mcp_response.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if any(line.startswith(word) for word in commentary_words):
+            continue
+        if ":" in line:
+            key, _, value = line.partition(":")
+            key   = key.strip().upper().replace(" ", "_")
+            value = value.strip()
+            if value and key.replace("_", "").isalpha():
+                result[key] = value
+    return result
 
 
 def strip_narrative(text: str) -> str:
