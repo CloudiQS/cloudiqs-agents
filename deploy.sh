@@ -1,8 +1,8 @@
 #!/bin/bash
 # CloudiQS Engine - Deploy script
-# ONLY does: git pull, copy agent SOUL.md files, rebuild bridge, health check.
-# NEVER touches the OpenClaw gateway or cron jobs.
-# Gateway runs in a screen session — leave it alone.
+# Does: git pull, copy agent SOUL.md files, rebuild bridge, health check, re-register cron jobs.
+# NEVER touches the OpenClaw gateway process itself.
+# Gateway runs via nohup — leave it alone.
 set -e
 
 GREEN='\033[0;32m'
@@ -75,13 +75,20 @@ else
 fi
 
 # Step 4: Run healthcheck (informational — never fails deploy)
-echo -e "${YELLOW}[4/4] Running healthcheck...${NC}"
+echo -e "${YELLOW}[4/5] Running healthcheck...${NC}"
 bash "$REPO_DIR/scripts/healthcheck.sh" || true
+
+# Step 5: Re-register cron jobs so new/updated agents are scheduled
+echo -e "${YELLOW}[5/5] Re-registering cron jobs...${NC}"
+cd "$REPO_DIR"
+bash scripts/register-cron-jobs.sh
+echo -e "  ${GREEN}Cron jobs registered${NC}"
 
 echo ""
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  Deploy complete${NC}"
 echo -e "${GREEN}  Agents: $AGENT_COUNT SOUL.md files copied${NC}"
 echo -e "${GREEN}  Bridge: http://localhost:8787${NC}"
-echo -e "${GREEN}  Gateway: untouched (cron jobs still running)${NC}"
+echo -e "${GREEN}  Gateway: untouched${NC}"
+echo -e "${GREEN}  Cron jobs: re-registered${NC}"
 echo -e "${GREEN}========================================${NC}"
