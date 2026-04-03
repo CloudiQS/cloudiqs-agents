@@ -20,6 +20,7 @@ Premium card builders (exported):
   build_ace_update_card(data)         - ACE stage change card
 """
 
+import json
 import logging
 from typing import Optional
 import httpx
@@ -96,8 +97,11 @@ def build_section_card(
         "items": header_items,
     })
 
-    # Sections
-    for i, section in enumerate(sections):
+    # Sections — cap at 8 to stay under the 20 KB limit
+    _MAX_SECTION_BODY = 600   # chars per section body
+    _MAX_FACTS        = 10    # facts per FactSet
+
+    for i, section in enumerate(sections[:8]):
         if i > 0:
             body.append(_sep())
 
@@ -105,10 +109,13 @@ def build_section_card(
 
         section_body = section.get("body", "")
         if section_body:
+            if len(section_body) > _MAX_SECTION_BODY:
+                section_body = section_body[:_MAX_SECTION_BODY].rstrip() + "\n… [truncated]"
             items.append({"type": "TextBlock", "text": section_body, "wrap": True, "spacing": "small"})
 
         facts = section.get("facts")
         if facts:
+            facts = facts[:_MAX_FACTS]
             items.append({"type": "FactSet", "facts": facts, "spacing": "small"})
 
         container: dict = {"type": "Container", "items": items, "spacing": "medium"}
@@ -203,10 +210,12 @@ def _wrap_card(body: list) -> dict:
         "type": "message",
         "attachments": [{
             "contentType": "application/vnd.microsoft.card.adaptive",
+            "contentUrl": None,
             "content": {
                 "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
                 "type": "AdaptiveCard",
                 "version": "1.4",
+                "msteams": {"width": "Full"},
                 "body": body,
             },
         }],
@@ -233,8 +242,15 @@ def _build_adaptive_card(title: str, body_text: str, facts: Optional[list] = Non
 
 # ── Internal HTTP helper ──────────────────────────────────────────────────────
 
+_TEAMS_MAX_BYTES = 20 * 1024   # 20 KB — leave headroom below the 28 KB Teams limit
+
+
 async def _post_raw(payload: dict, webhook_key: str = "teams/webhook-url") -> bool:
-    """POST any payload to the Teams webhook. Returns True on 200."""
+    """POST any payload to the Teams webhook. Returns True on 200.
+
+    Logs the full Power Automate error response on failure so the cause
+    is visible in CloudWatch without having to reproduce locally.
+    """
     try:
         url = get_secret(webhook_key)
     except Exception as e:
@@ -243,12 +259,30 @@ async def _post_raw(payload: dict, webhook_key: str = "teams/webhook-url") -> bo
     if is_dummy(url):
         logger.warning("teams_webhook_not_configured", extra={"key": webhook_key})
         return False
+
+    payload_bytes = len(json.dumps(payload).encode())
+    if payload_bytes > _TEAMS_MAX_BYTES:
+        logger.warning(
+            "teams_payload_oversized",
+            extra={"key": webhook_key, "bytes": payload_bytes, "limit": _TEAMS_MAX_BYTES},
+        )
+        return False   # caller must send a smaller fallback
+
     try:
         async with httpx.AsyncClient(timeout=10) as c:
             r = await c.post(url, json=payload)
             if r.status_code == 200:
                 return True
-            logger.warning("teams_post_failed", extra={"status": r.status_code, "key": webhook_key})
+            # Log the full response body — Power Automate puts the reason here
+            logger.warning(
+                "teams_post_failed",
+                extra={
+                    "status": r.status_code,
+                    "key": webhook_key,
+                    "bytes": payload_bytes,
+                    "response": r.text[:1000],
+                },
+            )
     except Exception as e:
         logger.error("teams_post_error", extra={"error": str(e), "key": webhook_key})
     return False
